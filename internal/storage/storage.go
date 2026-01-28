@@ -69,10 +69,10 @@ func (s *Store) Close() {
 
 func (s *Store) initSchema(ctx context.Context) error {
 	schema := `
-		-- Main key-value store for string types
+		-- Main key-value store for string types (BYTEA for binary-safe storage)
 		CREATE TABLE IF NOT EXISTS kv_strings (
 			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL,
+			value BYTEA NOT NULL,
 			expires_at TIMESTAMPTZ
 		);
 		CREATE INDEX IF NOT EXISTS idx_kv_strings_expires ON kv_strings(expires_at) WHERE expires_at IS NOT NULL;
@@ -81,7 +81,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS kv_hashes (
 			key TEXT NOT NULL,
 			field TEXT NOT NULL,
-			value TEXT NOT NULL,
+			value BYTEA NOT NULL,
 			expires_at TIMESTAMPTZ,
 			PRIMARY KEY (key, field)
 		);
@@ -92,7 +92,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS kv_lists (
 			key TEXT NOT NULL,
 			idx BIGINT NOT NULL,
-			value TEXT NOT NULL,
+			value BYTEA NOT NULL,
 			expires_at TIMESTAMPTZ,
 			PRIMARY KEY (key, idx)
 		);
@@ -102,7 +102,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 		-- Set type storage
 		CREATE TABLE IF NOT EXISTS kv_sets (
 			key TEXT NOT NULL,
-			member TEXT NOT NULL,
+			member BYTEA NOT NULL,
 			expires_at TIMESTAMPTZ,
 			PRIMARY KEY (key, member)
 		);
@@ -118,7 +118,65 @@ func (s *Store) initSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_kv_meta_expires ON kv_meta(expires_at) WHERE expires_at IS NOT NULL;
 	`
 	_, err := s.pool.Exec(ctx, schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Run migrations for existing installations (alter TEXT columns to BYTEA)
+	return s.runMigrations(ctx)
+}
+
+func (s *Store) runMigrations(ctx context.Context) error {
+	// Migration: Convert TEXT columns to BYTEA for binary-safe storage
+	migrations := []string{
+		// kv_strings.value: TEXT -> BYTEA
+		`DO $$ 
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns 
+				WHERE table_name = 'kv_strings' AND column_name = 'value' AND data_type = 'text'
+			) THEN
+				ALTER TABLE kv_strings ALTER COLUMN value TYPE BYTEA USING value::bytea;
+			END IF;
+		END $$`,
+		// kv_hashes.value: TEXT -> BYTEA
+		`DO $$ 
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns 
+				WHERE table_name = 'kv_hashes' AND column_name = 'value' AND data_type = 'text'
+			) THEN
+				ALTER TABLE kv_hashes ALTER COLUMN value TYPE BYTEA USING value::bytea;
+			END IF;
+		END $$`,
+		// kv_lists.value: TEXT -> BYTEA
+		`DO $$ 
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns 
+				WHERE table_name = 'kv_lists' AND column_name = 'value' AND data_type = 'text'
+			) THEN
+				ALTER TABLE kv_lists ALTER COLUMN value TYPE BYTEA USING value::bytea;
+			END IF;
+		END $$`,
+		// kv_sets.member: TEXT -> BYTEA
+		`DO $$ 
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns 
+				WHERE table_name = 'kv_sets' AND column_name = 'member' AND data_type = 'text'
+			) THEN
+				ALTER TABLE kv_sets ALTER COLUMN member TYPE BYTEA USING member::bytea;
+			END IF;
+		END $$`,
+	}
+
+	for _, m := range migrations {
+		if _, err := s.pool.Exec(ctx, m); err != nil {
+			return fmt.Errorf("migration failed: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) cleanupExpiredKeys(ctx context.Context) {
@@ -153,7 +211,7 @@ func (s *Store) deleteExpiredKeys(ctx context.Context) {
 
 // Get retrieves a string value by key
 func (s *Store) Get(ctx context.Context, key string) (string, bool, error) {
-	var value string
+	var value []byte
 	err := s.pool.QueryRow(ctx,
 		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
 		key,
@@ -165,7 +223,7 @@ func (s *Store) Get(ctx context.Context, key string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	return value, true, nil
+	return string(value), true, nil
 }
 
 // Set stores a string value
@@ -233,11 +291,12 @@ func (s *Store) MGet(ctx context.Context, keys []string) ([]interface{}, error) 
 
 	keyValues := make(map[string]string)
 	for rows.Next() {
-		var key, value string
+		var key string
+		var value []byte
 		if err := rows.Scan(&key, &value); err != nil {
 			return nil, err
 		}
-		keyValues[key] = value
+		keyValues[key] = string(value)
 	}
 
 	for i, key := range keys {
@@ -280,7 +339,7 @@ func (s *Store) MSet(ctx context.Context, pairs map[string]string) error {
 func (s *Store) Incr(ctx context.Context, key string, delta int64) (int64, error) {
 	var result int64
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
-		var value string
+		var value []byte
 		err := tx.QueryRow(ctx,
 			"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
 			key,
@@ -292,7 +351,7 @@ func (s *Store) Incr(ctx context.Context, key string, delta int64) (int64, error
 		} else if err != nil {
 			return err
 		} else {
-			current, err = strconv.ParseInt(value, 10, 64)
+			current, err = strconv.ParseInt(string(value), 10, 64)
 			if err != nil {
 				return fmt.Errorf("value is not an integer")
 			}
@@ -320,13 +379,13 @@ func (s *Store) Append(ctx context.Context, key, value string) (int64, error) {
 		_, err := tx.Exec(ctx,
 			`INSERT INTO kv_strings (key, value) VALUES ($1, $2)
 			 ON CONFLICT (key) DO UPDATE SET value = kv_strings.value || $2`,
-			key, value,
+			key, []byte(value),
 		)
 		if err != nil {
 			return err
 		}
 
-		var newValue string
+		var newValue []byte
 		err = tx.QueryRow(ctx, "SELECT value FROM kv_strings WHERE key = $1", key).Scan(&newValue)
 		if err != nil {
 			return err
@@ -589,7 +648,7 @@ func (s *Store) Rename(ctx context.Context, oldKey, newKey string) error {
 
 // HGet gets a hash field value
 func (s *Store) HGet(ctx context.Context, key, field string) (string, bool, error) {
-	var value string
+	var value []byte
 	err := s.pool.QueryRow(ctx,
 		`SELECT value FROM kv_hashes 
 		 WHERE key = $1 AND field = $2 AND (expires_at IS NULL OR expires_at > NOW())`,
@@ -602,7 +661,7 @@ func (s *Store) HGet(ctx context.Context, key, field string) (string, bool, erro
 	if err != nil {
 		return "", false, err
 	}
-	return value, true, nil
+	return string(value), true, nil
 }
 
 // HSet sets hash fields
@@ -672,11 +731,12 @@ func (s *Store) HGetAll(ctx context.Context, key string) (map[string]string, err
 
 	result := make(map[string]string)
 	for rows.Next() {
-		var field, value string
+		var field string
+		var value []byte
 		if err := rows.Scan(&field, &value); err != nil {
 			return nil, err
 		}
-		result[field] = value
+		result[field] = string(value)
 	}
 	return result, nil
 }
@@ -695,11 +755,12 @@ func (s *Store) HMGet(ctx context.Context, key string, fields []string) ([]inter
 
 	fieldValues := make(map[string]string)
 	for rows.Next() {
-		var field, value string
+		var field string
+		var value []byte
 		if err := rows.Scan(&field, &value); err != nil {
 			return nil, err
 		}
-		fieldValues[field] = value
+		fieldValues[field] = string(value)
 	}
 
 	results := make([]interface{}, len(fields))
@@ -761,11 +822,11 @@ func (s *Store) HVals(ctx context.Context, key string) ([]string, error) {
 
 	var values []string
 	for rows.Next() {
-		var value string
+		var value []byte
 		if err := rows.Scan(&value); err != nil {
 			return nil, err
 		}
-		values = append(values, value)
+		values = append(values, string(value))
 	}
 	return values, nil
 }
@@ -958,11 +1019,11 @@ func (s *Store) LRange(ctx context.Context, key string, start, stop int64) ([]st
 
 	var allValues []string
 	for rows.Next() {
-		var value string
+		var value []byte
 		if err := rows.Scan(&value); err != nil {
 			return nil, err
 		}
-		allValues = append(allValues, value)
+		allValues = append(allValues, string(value))
 	}
 
 	length := int64(len(allValues))
@@ -1061,11 +1122,11 @@ func (s *Store) SMembers(ctx context.Context, key string) ([]string, error) {
 
 	var members []string
 	for rows.Next() {
-		var member string
+		var member []byte
 		if err := rows.Scan(&member); err != nil {
 			return nil, err
 		}
-		members = append(members, member)
+		members = append(members, string(member))
 	}
 	return members, nil
 }
