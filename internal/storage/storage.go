@@ -41,8 +41,8 @@ type Config struct {
 // New creates a new Store with the given configuration
 func New(ctx context.Context, cfg Config) (*Store, error) {
 	connStr := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database, cfg.SSLMode,
+		"user=%s password=%s host=%s port=%d dbname=%s sslmode=%s",
+		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode,
 	)
 
 	pool, err := pgxpool.New(ctx, connStr)

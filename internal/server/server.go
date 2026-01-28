@@ -47,6 +47,19 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
+// ServeWithListener starts the server with an existing listener
+func (s *Server) ServeWithListener(listener net.Listener) error {
+	s.listener = listener
+	log.Printf("Server listening on %s", listener.Addr().String())
+	s.acceptLoop(context.Background())
+	return nil
+}
+
+// Close closes the server (alias for Stop)
+func (s *Server) Close() {
+	s.Stop()
+}
+
 // Stop gracefully stops the server
 func (s *Server) Stop() {
 	close(s.quit)
