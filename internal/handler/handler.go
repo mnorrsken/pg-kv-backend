@@ -15,13 +15,13 @@ import (
 
 // Handler processes Redis commands
 type Handler struct {
-	store     *storage.Store
+	store     storage.Backend
 	password  string
 	startTime time.Time
 }
 
 // New creates a new command handler
-func New(store *storage.Store, password string) *Handler {
+func New(store storage.Backend, password string) *Handler {
 	return &Handler{
 		store:     store,
 		password:  password,
