@@ -118,65 +118,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_kv_meta_expires ON kv_meta(expires_at) WHERE expires_at IS NOT NULL;
 	`
 	_, err := s.pool.Exec(ctx, schema)
-	if err != nil {
-		return err
-	}
-
-	// Run migrations for existing installations (alter TEXT columns to BYTEA)
-	return s.runMigrations(ctx)
-}
-
-func (s *Store) runMigrations(ctx context.Context) error {
-	// Migration: Convert TEXT columns to BYTEA for binary-safe storage
-	migrations := []string{
-		// kv_strings.value: TEXT -> BYTEA
-		`DO $$ 
-		BEGIN
-			IF EXISTS (
-				SELECT 1 FROM information_schema.columns 
-				WHERE table_name = 'kv_strings' AND column_name = 'value' AND data_type = 'text'
-			) THEN
-				ALTER TABLE kv_strings ALTER COLUMN value TYPE BYTEA USING value::bytea;
-			END IF;
-		END $$`,
-		// kv_hashes.value: TEXT -> BYTEA
-		`DO $$ 
-		BEGIN
-			IF EXISTS (
-				SELECT 1 FROM information_schema.columns 
-				WHERE table_name = 'kv_hashes' AND column_name = 'value' AND data_type = 'text'
-			) THEN
-				ALTER TABLE kv_hashes ALTER COLUMN value TYPE BYTEA USING value::bytea;
-			END IF;
-		END $$`,
-		// kv_lists.value: TEXT -> BYTEA
-		`DO $$ 
-		BEGIN
-			IF EXISTS (
-				SELECT 1 FROM information_schema.columns 
-				WHERE table_name = 'kv_lists' AND column_name = 'value' AND data_type = 'text'
-			) THEN
-				ALTER TABLE kv_lists ALTER COLUMN value TYPE BYTEA USING value::bytea;
-			END IF;
-		END $$`,
-		// kv_sets.member: TEXT -> BYTEA
-		`DO $$ 
-		BEGIN
-			IF EXISTS (
-				SELECT 1 FROM information_schema.columns 
-				WHERE table_name = 'kv_sets' AND column_name = 'member' AND data_type = 'text'
-			) THEN
-				ALTER TABLE kv_sets ALTER COLUMN member TYPE BYTEA USING member::bytea;
-			END IF;
-		END $$`,
-	}
-
-	for _, m := range migrations {
-		if _, err := s.pool.Exec(ctx, m); err != nil {
-			return fmt.Errorf("migration failed: %w", err)
-		}
-	}
-	return nil
+	return err
 }
 
 func (s *Store) cleanupExpiredKeys(ctx context.Context) {
@@ -243,7 +185,7 @@ func (s *Store) Set(ctx context.Context, key, value string, ttl time.Duration) e
 		_, err := tx.Exec(ctx,
 			`INSERT INTO kv_strings (key, value, expires_at) VALUES ($1, $2, $3)
 			 ON CONFLICT (key) DO UPDATE SET value = $2, expires_at = $3`,
-			key, value, expiresAt,
+			key, []byte(value), expiresAt,
 		)
 		if err != nil {
 			return err
@@ -258,7 +200,7 @@ func (s *Store) SetNX(ctx context.Context, key, value string) (bool, error) {
 	result, err := s.pool.Exec(ctx,
 		`INSERT INTO kv_strings (key, value) VALUES ($1, $2)
 		 ON CONFLICT (key) DO NOTHING`,
-		key, value,
+		key, []byte(value),
 	)
 	if err != nil {
 		return false, err
@@ -321,7 +263,7 @@ func (s *Store) MSet(ctx context.Context, pairs map[string]string) error {
 			_, err := tx.Exec(ctx,
 				`INSERT INTO kv_strings (key, value) VALUES ($1, $2)
 				 ON CONFLICT (key) DO UPDATE SET value = $2`,
-				key, value,
+				key, []byte(value),
 			)
 			if err != nil {
 				return err
@@ -361,7 +303,7 @@ func (s *Store) Incr(ctx context.Context, key string, delta int64) (int64, error
 		_, err = tx.Exec(ctx,
 			`INSERT INTO kv_strings (key, value) VALUES ($1, $2)
 			 ON CONFLICT (key) DO UPDATE SET value = $2`,
-			key, strconv.FormatInt(result, 10),
+			key, []byte(strconv.FormatInt(result, 10)),
 		)
 		if err != nil {
 			return err
@@ -681,7 +623,7 @@ func (s *Store) HSet(ctx context.Context, key string, fields map[string]string) 
 			result, err := tx.Exec(ctx,
 				`INSERT INTO kv_hashes (key, field, value) VALUES ($1, $2, $3)
 				 ON CONFLICT (key, field) DO UPDATE SET value = $3`,
-				key, field, value,
+				key, field, []byte(value),
 			)
 			if err != nil {
 				return err
@@ -870,7 +812,7 @@ func (s *Store) LPush(ctx context.Context, key string, values []string) (int64, 
 		for i, value := range values {
 			_, err := tx.Exec(ctx,
 				"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
-				key, minIdx-int64(i+1), value,
+				key, minIdx-int64(i+1), []byte(value),
 			)
 			if err != nil {
 				return err
@@ -917,7 +859,7 @@ func (s *Store) RPush(ctx context.Context, key string, values []string) (int64, 
 		for i, value := range values {
 			_, err := tx.Exec(ctx,
 				"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
-				key, maxIdx+int64(i+1), value,
+				key, maxIdx+int64(i+1), []byte(value),
 			)
 			if err != nil {
 				return err
@@ -1083,7 +1025,7 @@ func (s *Store) SAdd(ctx context.Context, key string, members []string) (int64, 
 			result, err := tx.Exec(ctx,
 				`INSERT INTO kv_sets (key, member) VALUES ($1, $2)
 				 ON CONFLICT (key, member) DO NOTHING`,
-				key, member,
+				key, []byte(member),
 			)
 			if err != nil {
 				return err
@@ -1098,9 +1040,14 @@ func (s *Store) SAdd(ctx context.Context, key string, members []string) (int64, 
 
 // SRem removes members from a set
 func (s *Store) SRem(ctx context.Context, key string, members []string) (int64, error) {
+	// Convert string members to []byte for BYTEA comparison
+	byteMembers := make([][]byte, len(members))
+	for i, m := range members {
+		byteMembers[i] = []byte(m)
+	}
 	result, err := s.pool.Exec(ctx,
 		"DELETE FROM kv_sets WHERE key = $1 AND member = ANY($2)",
-		key, members,
+		key, byteMembers,
 	)
 	if err != nil {
 		return 0, err
@@ -1137,7 +1084,7 @@ func (s *Store) SIsMember(ctx context.Context, key, member string) (bool, error)
 	err := s.pool.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM kv_sets 
 		 WHERE key = $1 AND member = $2 AND (expires_at IS NULL OR expires_at > NOW()))`,
-		key, member,
+		key, []byte(member),
 	).Scan(&exists)
 	return exists, err
 }
