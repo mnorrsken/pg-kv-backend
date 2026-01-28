@@ -1,0 +1,61 @@
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/mnorrsken/pg-kv-backend/internal/config"
+	"github.com/mnorrsken/pg-kv-backend/internal/handler"
+	"github.com/mnorrsken/pg-kv-backend/internal/server"
+	"github.com/mnorrsken/pg-kv-backend/internal/storage"
+)
+
+func main() {
+	cfg := config.Load()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Connect to PostgreSQL
+	log.Printf("Connecting to PostgreSQL at %s:%d...", cfg.PGHost, cfg.PGPort)
+	store, err := storage.New(ctx, storage.Config{
+		Host:     cfg.PGHost,
+		Port:     cfg.PGPort,
+		User:     cfg.PGUser,
+		Password: cfg.PGPassword,
+		Database: cfg.PGDatabase,
+		SSLMode:  cfg.PGSSLMode,
+	})
+	if err != nil {
+		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
+	}
+	defer store.Close()
+	log.Println("Connected to PostgreSQL")
+
+	// Create handler
+	h := handler.New(store, cfg.RedisPassword)
+
+	// Create and start server
+	srv := server.New(cfg.RedisAddr, h)
+	if err := srv.Start(ctx); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
+
+	if cfg.RedisPassword != "" {
+		log.Println("Authentication is enabled")
+	}
+	log.Printf("pg-kv-backend is ready to accept connections on %s", cfg.RedisAddr)
+
+	// Wait for shutdown signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	log.Println("Shutting down...")
+	cancel()
+	srv.Stop()
+	log.Println("Server stopped")
+}
