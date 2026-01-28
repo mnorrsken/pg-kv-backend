@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pg-kv-backend.fullname" . }}
+  labels:
+    {{- include "pg-kv-backend.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "pg-kv-backend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "pg-kv-backend.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pg-kv-backend.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          env:
+            - name: REDIS_ADDR
+              value: {{ .Values.redis.addr | quote }}
+            - name: PG_HOST
+              value: {{ .Values.postgresql.host | quote }}
+            - name: PG_PORT
+              value: {{ .Values.postgresql.port | quote }}
+            - name: PG_DATABASE
+              value: {{ .Values.postgresql.database | quote }}
+            - name: PG_SSLMODE
+              value: {{ .Values.postgresql.sslmode | quote }}
+            {{- if .Values.postgresql.auth.existingSecret.usernameKey }}
+            - name: PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
+                  key: {{ .Values.postgresql.auth.existingSecret.usernameKey }}
+            {{- else }}
+            - name: PG_USER
+              value: {{ .Values.postgresql.auth.username | quote }}
+            {{- end }}
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
+                  key: {{ .Values.postgresql.auth.existingSecret.passwordKey | default "postgresql-password" }}
+            {{- if or .Values.redis.password.value .Values.redis.password.existingSecret.name }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pg-kv-backend.redisSecretName" . }}
+                  key: {{ .Values.redis.password.existingSecret.key | default "redis-password" }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
