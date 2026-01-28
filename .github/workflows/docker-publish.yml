@@ -15,8 +15,51 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: testingpassword
+        ports:
+          - 5789:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run unit tests
+        run: go test -v ./tests/...
+
+      - name: Run PostgreSQL integration tests
+        run: go test -v -tags=postgres ./tests/...
+        env:
+          PG_HOST: localhost
+          PG_PORT: 5789
+          PG_USER: postgres
+          PG_PASSWORD: testingpassword
+          PG_DATABASE: postgres
+          PG_SSLMODE: disable
+
   build-and-push:
     runs-on: ubuntu-latest
+    needs: test
     permissions:
       contents: read
       packages: write
