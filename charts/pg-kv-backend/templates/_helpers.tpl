@@ -63,8 +63,8 @@ Create the name of the service account to use
 Get the PostgreSQL secret name
 */}}
 {{- define "pg-kv-backend.postgresqlSecretName" -}}
-{{- if .Values.postgresql.auth.existingSecret.name }}
-{{- .Values.postgresql.auth.existingSecret.name }}
+{{- if .Values.postgresql.existingSecret.name }}
+{{- .Values.postgresql.existingSecret.name }}
 {{- else }}
 {{- include "pg-kv-backend.fullname" . }}-postgresql
 {{- end }}
@@ -85,7 +85,7 @@ Get the Redis secret name
 Return true if a PostgreSQL secret should be created
 */}}
 {{- define "pg-kv-backend.createPostgresqlSecret" -}}
-{{- if and (not .Values.postgresql.auth.existingSecret.name) .Values.postgresql.auth.password }}
+{{- if and (not .Values.postgresql.existingSecret.name) .Values.postgresql.auth.password }}
 {{- true }}
 {{- end }}
 {{- end }}

@@ -95,21 +95,27 @@ postgresql:
   # PostgreSQL SSL mode (disable, require, verify-ca, verify-full)
   sslmode: "disable"
   
+  # Use an existing secret for PostgreSQL credentials
+  existingSecret:
+    # Name of the existing secret
+    name: ""
+    # Key in the secret containing the username (optional)
+    usernameKey: ""
+    # Key in the secret containing the password
+    passwordKey: "password"
+    # Key in the secret containing the host (optional)
+    hostKey: ""
+    # Key in the secret containing the port (optional)
+    portKey: ""
+    # Key in the secret containing the database name (optional)
+    dbnameKey: ""
+  
   # Authentication configuration
   auth:
     # PostgreSQL username (ignored if existingSecret provides it)
     username: "postgres"
     # PostgreSQL password (ignored if existingSecret is set)
     password: ""
-    
-    # Use an existing secret for PostgreSQL credentials
-    existingSecret:
-      # Name of the existing secret
-      name: ""
-      # Key in the secret containing the username (optional)
-      usernameKey: ""
-      # Key in the secret containing the password
-      passwordKey: "postgresql-password"
 
 # Additional environment variables
 extraEnv: []
