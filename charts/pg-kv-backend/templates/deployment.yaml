@@ -37,6 +37,11 @@ spec:
             - name: redis
               containerPort: 6379
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             tcpSocket:
               port: redis
@@ -103,6 +108,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "pg-kv-backend.redisSecretName" . }}
                   key: {{ .Values.redis.password.existingSecret.key | default "redis-password" }}
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: METRICS_ADDR
+              value: {{ .Values.metrics.addr | quote }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

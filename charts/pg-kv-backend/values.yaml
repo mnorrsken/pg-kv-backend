@@ -128,3 +128,36 @@ extraEnvFrom: []
   #     name: my-secret
   # - configMapRef:
   #     name: my-configmap
+
+# Metrics configuration
+metrics:
+  # Enable metrics endpoint
+  enabled: true
+  # Metrics server address (inside the container)
+  addr: ":9090"
+  
+  # Metrics service configuration
+  service:
+    # Port for the metrics service
+    port: 9090
+    # Annotations for the metrics service
+    annotations: {}
+  
+  # ServiceMonitor configuration (requires Prometheus Operator)
+  serviceMonitor:
+    # Enable ServiceMonitor creation
+    enabled: false
+    # Namespace for the ServiceMonitor (defaults to release namespace)
+    namespace: ""
+    # Labels to add to the ServiceMonitor
+    labels: {}
+    # Interval at which metrics should be scraped
+    interval: "30s"
+    # Timeout for scraping metrics
+    scrapeTimeout: "10s"
+    # Metric relabel configs
+    metricRelabelings: []
+    # Relabel configs
+    relabelings: []
+    # Honor labels
+    honorLabels: false
