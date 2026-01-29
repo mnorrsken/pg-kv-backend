@@ -842,6 +842,211 @@ func TestNegativeIndices(t *testing.T) {
 	}
 }
 
+// ============== Client Command Tests ==============
+
+func TestClientID(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// CLIENT ID should return a positive integer
+	id, err := ts.client.ClientID(ctx).Result()
+	if err != nil {
+		t.Fatalf("CLIENT ID failed: %v", err)
+	}
+	if id <= 0 {
+		t.Errorf("Expected positive client ID, got %d", id)
+	}
+}
+
+func TestClientSetNameGetName(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Initially, name should be empty
+	name, err := ts.client.ClientGetName(ctx).Result()
+	if err != nil && err != redis.Nil {
+		t.Fatalf("CLIENT GETNAME failed: %v", err)
+	}
+	if name != "" {
+		t.Errorf("Expected empty name initially, got '%s'", name)
+	}
+
+	// Set a name
+	err = ts.client.Do(ctx, "CLIENT", "SETNAME", "test-client").Err()
+	if err != nil {
+		t.Fatalf("CLIENT SETNAME failed: %v", err)
+	}
+
+	// Get the name back
+	name, err = ts.client.ClientGetName(ctx).Result()
+	if err != nil {
+		t.Fatalf("CLIENT GETNAME failed: %v", err)
+	}
+	if name != "test-client" {
+		t.Errorf("Expected 'test-client', got '%s'", name)
+	}
+}
+
+func TestClientSetInfo(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set library name
+	err := ts.client.Do(ctx, "CLIENT", "SETINFO", "LIB-NAME", "my-lib").Err()
+	if err != nil {
+		t.Fatalf("CLIENT SETINFO LIB-NAME failed: %v", err)
+	}
+
+	// Set library version
+	err = ts.client.Do(ctx, "CLIENT", "SETINFO", "LIB-VER", "1.0.0").Err()
+	if err != nil {
+		t.Fatalf("CLIENT SETINFO LIB-VER failed: %v", err)
+	}
+
+	// Verify via CLIENT INFO
+	info, err := ts.client.Do(ctx, "CLIENT", "INFO").Text()
+	if err != nil {
+		t.Fatalf("CLIENT INFO failed: %v", err)
+	}
+	if info == "" {
+		t.Error("CLIENT INFO returned empty string")
+	}
+}
+
+func TestClientInfo(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set a name first for easier verification
+	ts.client.Do(ctx, "CLIENT", "SETNAME", "info-test")
+
+	info, err := ts.client.Do(ctx, "CLIENT", "INFO").Text()
+	if err != nil {
+		t.Fatalf("CLIENT INFO failed: %v", err)
+	}
+
+	// Should contain client ID
+	if info == "" {
+		t.Error("CLIENT INFO returned empty string")
+	}
+
+	// Should contain the name we set
+	if !contains(info, "name=info-test") {
+		t.Errorf("CLIENT INFO should contain name=info-test, got: %s", info)
+	}
+
+	// Should contain addr
+	if !contains(info, "addr=") {
+		t.Errorf("CLIENT INFO should contain addr=, got: %s", info)
+	}
+}
+
+func TestClientList(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set a name first
+	ts.client.Do(ctx, "CLIENT", "SETNAME", "list-test")
+
+	list, err := ts.client.Do(ctx, "CLIENT", "LIST").Text()
+	if err != nil {
+		t.Fatalf("CLIENT LIST failed: %v", err)
+	}
+
+	// Should contain our client
+	if !contains(list, "name=list-test") {
+		t.Errorf("CLIENT LIST should contain name=list-test, got: %s", list)
+	}
+}
+
+func TestClientTrackingInfo(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// TRACKINGINFO should return an empty array (not supported)
+	result, err := ts.client.Do(ctx, "CLIENT", "TRACKINGINFO").Result()
+	if err != nil {
+		t.Fatalf("CLIENT TRACKINGINFO failed: %v", err)
+	}
+
+	// Should be an empty slice
+	arr, ok := result.([]interface{})
+	if !ok {
+		t.Errorf("Expected array result, got %T", result)
+	}
+	if len(arr) != 0 {
+		t.Errorf("Expected empty array, got %v", arr)
+	}
+}
+
+func TestClientGetRedir(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// GETREDIR should return -1 (no redirection)
+	redir, err := ts.client.Do(ctx, "CLIENT", "GETREDIR").Int64()
+	if err != nil {
+		t.Fatalf("CLIENT GETREDIR failed: %v", err)
+	}
+	if redir != -1 {
+		t.Errorf("Expected -1, got %d", redir)
+	}
+}
+
+func TestClientReply(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// CLIENT REPLY ON should succeed
+	err := ts.client.Do(ctx, "CLIENT", "REPLY", "ON").Err()
+	if err != nil {
+		t.Fatalf("CLIENT REPLY ON failed: %v", err)
+	}
+}
+
+func TestClientUnknownSubcommand(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Unknown subcommand should return error
+	err := ts.client.Do(ctx, "CLIENT", "UNKNOWN").Err()
+	if err == nil {
+		t.Error("Expected error for unknown CLIENT subcommand")
+	}
+}
+
+// contains checks if s contains substr
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 // ============== Benchmark Tests ==============
 
 func BenchmarkSetGet(b *testing.B) {

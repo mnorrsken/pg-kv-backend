@@ -14,6 +14,15 @@ import (
 	"github.com/mnorrsken/pg-kv-backend/internal/storage"
 )
 
+// ClientState interface for client connection state
+type ClientState interface {
+	GetID() uint64
+	GetName() string
+	SetName(name string)
+	SetLibInfo(libName, libVersion string)
+	GetInfo() string
+}
+
 // Handler processes Redis commands
 type Handler struct {
 	store     storage.Backend
@@ -183,6 +192,99 @@ func (h *Handler) executeCommand(ctx context.Context, cmdName string, args []res
 
 	default:
 		return resp.Err(fmt.Sprintf("unknown command '%s'", cmdName))
+	}
+}
+
+// HandleClient processes CLIENT commands with connection state
+func (h *Handler) HandleClient(cmd resp.Value, client ClientState) resp.Value {
+	if cmd.Type != resp.Array || len(cmd.Array) < 2 {
+		return resp.ErrWrongArgs("client")
+	}
+
+	subCmd := strings.ToUpper(cmd.Array[1].Bulk)
+	args := cmd.Array[2:]
+
+	// Record metrics
+	start := time.Now()
+	result := h.executeClientCommand(subCmd, args, client)
+	duration := time.Since(start)
+	isError := result.Type == resp.Error
+	metrics.RecordCommand("CLIENT", duration, isError)
+
+	return result
+}
+
+func (h *Handler) executeClientCommand(subCmd string, args []resp.Value, client ClientState) resp.Value {
+	switch subCmd {
+	case "ID":
+		return resp.Int(int64(client.GetID()))
+
+	case "GETNAME":
+		name := client.GetName()
+		if name == "" {
+			return resp.NullBulk()
+		}
+		return resp.Bulk(name)
+
+	case "SETNAME":
+		if len(args) != 1 {
+			return resp.ErrWrongArgs("client setname")
+		}
+		client.SetName(args[0].Bulk)
+		return resp.OK()
+
+	case "SETINFO":
+		if len(args) < 2 {
+			return resp.ErrWrongArgs("client setinfo")
+		}
+		infoType := strings.ToUpper(args[0].Bulk)
+		infoValue := args[1].Bulk
+		switch infoType {
+		case "LIB-NAME":
+			client.SetLibInfo(infoValue, "")
+		case "LIB-VER":
+			client.SetLibInfo("", infoValue)
+		default:
+			return resp.Err("ERR Unknown argument for CLIENT SETINFO")
+		}
+		return resp.OK()
+
+	case "INFO":
+		return resp.Bulk(client.GetInfo())
+
+	case "LIST":
+		// Return only current client info
+		return resp.Bulk(client.GetInfo() + "\n")
+
+	case "TRACKINGINFO":
+		// Tracking not supported, return empty array
+		return resp.Arr()
+
+	case "CACHING":
+		// Client-side caching not supported
+		return resp.OK()
+
+	case "GETREDIR":
+		// No redirection
+		return resp.Int(-1)
+
+	case "UNPAUSE", "PAUSE":
+		// Not implemented, just acknowledge
+		return resp.OK()
+
+	case "NO-EVICT", "NO-TOUCH":
+		// Not implemented, just acknowledge
+		return resp.OK()
+
+	case "REPLY":
+		if len(args) != 1 {
+			return resp.ErrWrongArgs("client reply")
+		}
+		// REPLY ON/OFF/SKIP - we always reply, just acknowledge
+		return resp.OK()
+
+	default:
+		return resp.Err(fmt.Sprintf("ERR Unknown subcommand or wrong number of arguments for '%s'", subCmd))
 	}
 }
 

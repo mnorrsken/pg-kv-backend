@@ -94,6 +94,9 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	reader := resp.NewReader(conn)
 	writer := resp.NewWriter(conn)
 
+	// Create client state for this connection
+	client := NewClientState(conn)
+
 	// Track authentication state for this connection
 	authenticated := !s.handler.RequiresAuth()
 
@@ -134,6 +137,9 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 				} else {
 					response = resp.Value{Type: resp.Error, Str: "NOAUTH Authentication required."}
 				}
+			} else if cmdName == "CLIENT" {
+				// Handle CLIENT commands with client state
+				response = s.handler.HandleClient(cmd, client)
 			} else {
 				response = s.handler.Handle(ctx, cmd)
 			}
