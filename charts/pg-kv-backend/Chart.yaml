@@ -2,8 +2,8 @@ apiVersion: v2
 name: pg-kv-backend
 description: A Redis-compatible server with PostgreSQL backend
 type: application
-version: 0.3.0
-appVersion: 0.3.0
+version: 0.4.0
+appVersion: 0.4.0
 keywords:
   - redis
   - postgresql
