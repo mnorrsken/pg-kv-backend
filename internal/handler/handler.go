@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mnorrsken/pg-kv-backend/internal/metrics"
 	"github.com/mnorrsken/pg-kv-backend/internal/resp"
 	"github.com/mnorrsken/pg-kv-backend/internal/storage"
 )
@@ -49,6 +50,18 @@ func (h *Handler) Handle(ctx context.Context, cmd resp.Value) resp.Value {
 	cmdName := strings.ToUpper(cmd.Array[0].Bulk)
 	args := cmd.Array[1:]
 
+	// Record metrics
+	start := time.Now()
+	result := h.executeCommand(ctx, cmdName, args)
+	duration := time.Since(start)
+	isError := result.Type == resp.Error
+	metrics.RecordCommand(cmdName, duration, isError)
+
+	return result
+}
+
+// executeCommand routes and executes the command
+func (h *Handler) executeCommand(ctx context.Context, cmdName string, args []resp.Value) resp.Value {
 	switch cmdName {
 	// Connection commands
 	case "PING":

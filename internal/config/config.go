@@ -14,6 +14,9 @@ type Config struct {
 	// Redis authentication password (optional)
 	RedisPassword string
 
+	// Metrics server address
+	MetricsAddr string
+
 	// PostgreSQL configuration
 	PGHost     string
 	PGPort     int
@@ -28,6 +31,7 @@ func Load() *Config {
 	return &Config{
 		RedisAddr:     getEnv("REDIS_ADDR", ":6379"),
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
+		MetricsAddr:   getEnv("METRICS_ADDR", ":9090"),
 		PGHost:        getEnv("PG_HOST", "localhost"),
 		PGPort:     getEnvInt("PG_PORT", 5432),
 		PGUser:     getEnv("PG_USER", "postgres"),

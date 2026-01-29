@@ -36,6 +36,7 @@ Environment variables:
 |----------|-------------|---------|
 | `REDIS_ADDR` | Address to listen on | `:6379` |
 | `REDIS_PASSWORD` | Authentication password (optional) | `` |
+| `METRICS_ADDR` | Prometheus metrics server address | `:9090` |
 | `PG_HOST` | PostgreSQL host | `localhost` |
 | `PG_PORT` | PostgreSQL port | `5432` |
 | `PG_USER` | PostgreSQL user | `postgres` |
@@ -79,6 +80,34 @@ OK
 2) "John"
 3) "age"
 4) "30"
+```
+
+## Metrics
+
+Prometheus metrics are exposed on a separate HTTP server (default port `:9090`).
+
+### Available Endpoints
+
+- `GET /metrics` - Prometheus metrics
+- `GET /health` - Health check endpoint
+
+### Metrics Exposed
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `pgkv_commands_total` | Counter | Total number of Redis commands processed (labeled by command) |
+| `pgkv_command_duration_seconds` | Histogram | Duration of Redis command execution in seconds (labeled by command) |
+| `pgkv_command_errors_total` | Counter | Total number of Redis command errors (labeled by command) |
+| `pgkv_active_connections` | Gauge | Number of active client connections |
+| `pgkv_connections_total` | Counter | Total number of connections accepted |
+
+### Example Prometheus Configuration
+
+```yaml
+scrape_configs:
+  - job_name: 'pg-kv-backend'
+    static_configs:
+      - targets: ['localhost:9090']
 ```
 
 ## Architecture

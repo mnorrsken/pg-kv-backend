@@ -9,6 +9,7 @@ import (
 
 	"github.com/mnorrsken/pg-kv-backend/internal/config"
 	"github.com/mnorrsken/pg-kv-backend/internal/handler"
+	"github.com/mnorrsken/pg-kv-backend/internal/metrics"
 	"github.com/mnorrsken/pg-kv-backend/internal/server"
 	"github.com/mnorrsken/pg-kv-backend/internal/storage"
 )
@@ -35,6 +36,13 @@ func main() {
 	defer store.Close()
 	log.Println("Connected to PostgreSQL")
 
+	// Start metrics server
+	metricsSrv := metrics.NewServer(cfg.MetricsAddr)
+	if err := metricsSrv.Start(); err != nil {
+		log.Fatalf("Failed to start metrics server: %v", err)
+	}
+	log.Printf("Metrics server listening on %s", cfg.MetricsAddr)
+
 	// Create handler
 	h := handler.New(store, cfg.RedisPassword)
 
@@ -57,5 +65,6 @@ func main() {
 	log.Println("Shutting down...")
 	cancel()
 	srv.Stop()
+	metricsSrv.Stop()
 	log.Println("Server stopped")
 }
