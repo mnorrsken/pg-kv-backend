@@ -43,6 +43,26 @@ Environment variables:
 | `PG_PASSWORD` | PostgreSQL password | `postgres` |
 | `PG_DATABASE` | PostgreSQL database | `pgkv` |
 | `PG_SSLMODE` | PostgreSQL SSL mode | `disable` |
+| `CACHE_ENABLED` | Enable in-memory cache (opt-in) | `false` |
+| `CACHE_TTL` | Cache TTL duration | `250ms` |
+| `CACHE_MAX_SIZE` | Maximum cached entries | `10000` |
+
+### In-Memory Cache
+
+The optional in-memory cache reduces PostgreSQL load for read-heavy workloads by caching `GET` results:
+
+```bash
+export CACHE_ENABLED=true
+export CACHE_TTL=250ms
+export CACHE_MAX_SIZE=10000
+```
+
+**Important considerations:**
+- Cache is **opt-in** and disabled by default
+- Only caches string `GET` operations (hashes, lists, sets are not cached)
+- In **multi-pod deployments**, cached data may be stale for up to TTL duration
+- Writes (`SET`, `DEL`, etc.) invalidate the local cache immediately
+- Monitor cache effectiveness with `pgkv_cache_hits_total` and `pgkv_cache_misses_total` metrics
 
 ## Running
 

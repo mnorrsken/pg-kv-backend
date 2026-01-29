@@ -161,3 +161,13 @@ metrics:
     relabelings: []
     # Honor labels
     honorLabels: false
+
+# Cache configuration (for string GET operations)
+cache:
+  # Enable in-memory cache (opt-in, disabled by default)
+  # WARNING: In multi-pod deployments, cached data may be stale for up to TTL duration
+  enabled: false
+  # Cache TTL - how long to cache values (e.g., "100ms", "250ms", "1s")
+  ttl: "250ms"
+  # Maximum number of cached entries (0 = unlimited)
+  maxSize: 10000

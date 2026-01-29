@@ -54,6 +54,22 @@ var (
 			Help: "Total number of connections accepted",
 		},
 	)
+
+	// CacheHits counts the number of cache hits
+	CacheHits = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "pgkv_cache_hits_total",
+			Help: "Total number of cache hits",
+		},
+	)
+
+	// CacheMisses counts the number of cache misses
+	CacheMisses = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "pgkv_cache_misses_total",
+			Help: "Total number of cache misses",
+		},
+	)
 )
 
 // RecordCommand records metrics for a command execution

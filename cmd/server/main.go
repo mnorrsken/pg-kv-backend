@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/mnorrsken/pg-kv-backend/internal/cache"
 	"github.com/mnorrsken/pg-kv-backend/internal/config"
 	"github.com/mnorrsken/pg-kv-backend/internal/handler"
 	"github.com/mnorrsken/pg-kv-backend/internal/metrics"
@@ -33,8 +34,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}
-	defer store.Close()
 	log.Println("Connected to PostgreSQL")
+
+	// Wrap with cache if enabled
+	var backend storage.Backend = store
+	if cfg.CacheEnabled {
+		backend = cache.NewCachedStore(store, cache.Config{
+			TTL:     cfg.CacheTTL,
+			MaxSize: cfg.CacheMaxSize,
+		})
+		log.Printf("In-memory cache enabled (TTL: %v, MaxSize: %d)", cfg.CacheTTL, cfg.CacheMaxSize)
+	}
+	defer backend.Close()
 
 	// Start metrics server
 	metricsSrv := metrics.NewServer(cfg.MetricsAddr)
@@ -44,7 +55,7 @@ func main() {
 	log.Printf("Metrics server listening on %s", cfg.MetricsAddr)
 
 	// Create handler
-	h := handler.New(store, cfg.RedisPassword)
+	h := handler.New(backend, cfg.RedisPassword)
 
 	// Create and start server
 	srv := server.New(cfg.RedisAddr, h)

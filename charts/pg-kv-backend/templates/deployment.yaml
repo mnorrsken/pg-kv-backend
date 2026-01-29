@@ -113,6 +113,14 @@ spec:
             - name: METRICS_ADDR
               value: {{ .Values.metrics.addr | quote }}
             {{- end }}
+            {{- if .Values.cache.enabled }}
+            - name: CACHE_ENABLED
+              value: "true"
+            - name: CACHE_TTL
+              value: {{ .Values.cache.ttl | quote }}
+            - name: CACHE_MAX_SIZE
+              value: {{ .Values.cache.maxSize | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
