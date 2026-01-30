@@ -886,12 +886,13 @@ func (s *Store) LPop(ctx context.Context, key string) (string, bool, error) {
 	var found bool
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
 		var idx int64
+		var valueBytes []byte
 		err := tx.QueryRow(ctx,
 			`SELECT idx, value FROM kv_lists 
 			 WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())
 			 ORDER BY idx ASC LIMIT 1`,
 			key,
-		).Scan(&idx, &value)
+		).Scan(&idx, &valueBytes)
 
 		if err == pgx.ErrNoRows {
 			return nil
@@ -901,6 +902,7 @@ func (s *Store) LPop(ctx context.Context, key string) (string, bool, error) {
 		}
 
 		found = true
+		value = string(valueBytes)
 		_, err = tx.Exec(ctx, "DELETE FROM kv_lists WHERE key = $1 AND idx = $2", key, idx)
 		return err
 	})
@@ -913,12 +915,13 @@ func (s *Store) RPop(ctx context.Context, key string) (string, bool, error) {
 	var found bool
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
 		var idx int64
+		var valueBytes []byte
 		err := tx.QueryRow(ctx,
 			`SELECT idx, value FROM kv_lists 
 			 WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())
 			 ORDER BY idx DESC LIMIT 1`,
 			key,
-		).Scan(&idx, &value)
+		).Scan(&idx, &valueBytes)
 
 		if err == pgx.ErrNoRows {
 			return nil
@@ -928,6 +931,7 @@ func (s *Store) RPop(ctx context.Context, key string) (string, bool, error) {
 		}
 
 		found = true
+		value = string(valueBytes)
 		_, err = tx.Exec(ctx, "DELETE FROM kv_lists WHERE key = $1 AND idx = $2", key, idx)
 		return err
 	})
