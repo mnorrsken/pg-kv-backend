@@ -1,0 +1,11 @@
+namespace: myapp
+
+helmCharts:
+  - name: pg-kv-backend
+    releaseName: pg-kv-backend
+    valuesFile: values.yaml
+    namespace: myapp
+    repo: oci://ghcr.io/mnorrsken/charts
+
+resources:
+  - cluster.yaml

@@ -1,0 +1,14 @@
+replicaCount: 2
+
+redis:
+  password:
+    value: "demo-password"
+
+postgresql:
+  existingSecret:
+    name: pgkv-db-app
+    usernameKey: username
+    passwordKey: password
+    portKey: port
+    hostKey: host
+    dbnameKey: dbname
