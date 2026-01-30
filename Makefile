@@ -6,7 +6,7 @@ build:
 
 # Run unit tests (mock storage)
 test:
-	go test -v ./tests/...
+	go test -v ./tests/... ./internal/...
 
 # Start test PostgreSQL container
 test-up:
