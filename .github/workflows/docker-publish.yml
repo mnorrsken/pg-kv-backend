@@ -1,4 +1,4 @@
-name: Build and Publish Docker Image
+name: Build and Publish
 
 on:
   push:
@@ -95,10 +95,72 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [test, build-and-push]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if appVersion changed
+        id: version-check
+        run: |
+          NEW_APP_VERSION=$(grep '^appVersion:' charts/pg-kv-backend/Chart.yaml | awk '{print $2}' | tr -d '"')
+          NEW_CHART_VERSION=$(grep '^version:' charts/pg-kv-backend/Chart.yaml | awk '{print $2}' | tr -d '"')
+          
+          # Get old versions from previous commit
+          git show HEAD~1:charts/pg-kv-backend/Chart.yaml > /tmp/old-chart.yaml 2>/dev/null || echo -e "appVersion: \"\"\nversion: \"\"" > /tmp/old-chart.yaml
+          OLD_APP_VERSION=$(grep '^appVersion:' /tmp/old-chart.yaml | awk '{print $2}' | tr -d '"')
+          OLD_CHART_VERSION=$(grep '^version:' /tmp/old-chart.yaml | awk '{print $2}' | tr -d '"')
+          
+          echo "Old appVersion: ${OLD_APP_VERSION}, New appVersion: ${NEW_APP_VERSION}"
+          echo "Old chart version: ${OLD_CHART_VERSION}, New chart version: ${NEW_CHART_VERSION}"
+          
+          if [[ "$NEW_APP_VERSION" != "$OLD_APP_VERSION" ]] || [[ "$NEW_CHART_VERSION" != "$OLD_CHART_VERSION" ]]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "app_version=${NEW_APP_VERSION}" >> $GITHUB_OUTPUT
+            echo "chart_version=${NEW_CHART_VERSION}" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create release
+        if: steps.version-check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APP_VERSION="${{ steps.version-check.outputs.app_version }}"
+          CHART_VERSION="${{ steps.version-check.outputs.chart_version }}"
+          
+          # Check if release already exists
+          if gh release view "${APP_VERSION}" > /dev/null 2>&1; then
+            echo "Release ${APP_VERSION} already exists, skipping"
+            exit 0
+          fi
+          
+          gh release create "${APP_VERSION}" \
+            --title "Release ${APP_VERSION}" \
+            --notes "## Docker Image
+          \`\`\`
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${APP_VERSION}
+          \`\`\`
+          
+          ## Helm Chart (v${CHART_VERSION})
+          \`\`\`
+          helm pull oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/pg-kv-backend --version ${CHART_VERSION}
+          \`\`\`"
+          
+          echo "Created release ${APP_VERSION}"
+
   tag-release:
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'release' && !startsWith(github.event.release.tag_name, 'helm-')
+    if: github.event_name == 'release'
     permissions:
       contents: read
       packages: write
@@ -143,7 +205,7 @@ jobs:
   publish-helm-chart:
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'helm-')
+    if: github.event_name == 'release'
     permissions:
       contents: read
       packages: write
@@ -160,10 +222,22 @@ jobs:
       - name: Log in to Container Registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.3
+
       - name: Package Helm chart
         run: helm package charts/pg-kv-backend
 
       - name: Push Helm chart to GHCR
         run: |
           CHART_PACKAGE=$(ls pg-kv-backend-*.tgz)
+          CHART_VERSION=$(grep '^version:' charts/pg-kv-backend/Chart.yaml | awk '{print $2}' | tr -d '"')
+          
+          # Push versioned chart
           helm push ${CHART_PACKAGE} oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+          
+          # Tag as latest using crane
+          CHART_IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/pg-kv-backend:${CHART_VERSION}"
+          crane tag ${CHART_IMAGE} latest
+          
+          echo "Pushed chart version ${CHART_VERSION} and tagged as latest"
