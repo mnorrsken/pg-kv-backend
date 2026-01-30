@@ -1033,6 +1033,1033 @@ func TestClientUnknownSubcommand(t *testing.T) {
 	}
 }
 
+// ============== Negative Tests: Argument Validation ==============
+
+func TestGetWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// GET with no args
+	err := ts.client.Do(ctx, "GET").Err()
+	if err == nil {
+		t.Error("Expected error for GET with no args")
+	}
+
+	// GET with too many args
+	err = ts.client.Do(ctx, "GET", "key1", "key2").Err()
+	if err == nil {
+		t.Error("Expected error for GET with too many args")
+	}
+}
+
+func TestSetWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// SET with no args
+	err := ts.client.Do(ctx, "SET").Err()
+	if err == nil {
+		t.Error("Expected error for SET with no args")
+	}
+
+	// SET with only key
+	err = ts.client.Do(ctx, "SET", "key").Err()
+	if err == nil {
+		t.Error("Expected error for SET with only key")
+	}
+}
+
+func TestSetInvalidOptions(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// SET with EX but no value
+	err := ts.client.Do(ctx, "SET", "key", "value", "EX").Err()
+	if err == nil {
+		t.Error("Expected error for SET with EX but no value")
+	}
+
+	// SET with EX and non-integer value
+	err = ts.client.Do(ctx, "SET", "key", "value", "EX", "abc").Err()
+	if err == nil {
+		t.Error("Expected error for SET with non-integer EX value")
+	}
+
+	// SET with PX but no value
+	err = ts.client.Do(ctx, "SET", "key", "value", "PX").Err()
+	if err == nil {
+		t.Error("Expected error for SET with PX but no value")
+	}
+
+	// SET with PX and non-integer value
+	err = ts.client.Do(ctx, "SET", "key", "value", "PX", "abc").Err()
+	if err == nil {
+		t.Error("Expected error for SET with non-integer PX value")
+	}
+}
+
+func TestIncrOnNonInteger(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set a non-integer value
+	ts.client.Set(ctx, "notanumber", "hello", 0)
+
+	// INCR should fail
+	_, err := ts.client.Incr(ctx, "notanumber").Result()
+	if err == nil {
+		t.Error("Expected error for INCR on non-integer value")
+	}
+
+	// INCRBY should fail
+	_, err = ts.client.IncrBy(ctx, "notanumber", 5).Result()
+	if err == nil {
+		t.Error("Expected error for INCRBY on non-integer value")
+	}
+
+	// DECR should fail
+	_, err = ts.client.Decr(ctx, "notanumber").Result()
+	if err == nil {
+		t.Error("Expected error for DECR on non-integer value")
+	}
+
+	// DECRBY should fail
+	_, err = ts.client.DecrBy(ctx, "notanumber", 5).Result()
+	if err == nil {
+		t.Error("Expected error for DECRBY on non-integer value")
+	}
+}
+
+func TestIncrByWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// INCRBY with no args
+	err := ts.client.Do(ctx, "INCRBY").Err()
+	if err == nil {
+		t.Error("Expected error for INCRBY with no args")
+	}
+
+	// INCRBY with only key
+	err = ts.client.Do(ctx, "INCRBY", "key").Err()
+	if err == nil {
+		t.Error("Expected error for INCRBY with only key")
+	}
+
+	// INCRBY with non-integer increment
+	err = ts.client.Do(ctx, "INCRBY", "key", "abc").Err()
+	if err == nil {
+		t.Error("Expected error for INCRBY with non-integer increment")
+	}
+}
+
+func TestExpireWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// EXPIRE with no args
+	err := ts.client.Do(ctx, "EXPIRE").Err()
+	if err == nil {
+		t.Error("Expected error for EXPIRE with no args")
+	}
+
+	// EXPIRE with only key
+	err = ts.client.Do(ctx, "EXPIRE", "key").Err()
+	if err == nil {
+		t.Error("Expected error for EXPIRE with only key")
+	}
+
+	// EXPIRE with non-integer seconds
+	err = ts.client.Do(ctx, "EXPIRE", "key", "abc").Err()
+	if err == nil {
+		t.Error("Expected error for EXPIRE with non-integer seconds")
+	}
+}
+
+func TestDelWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// DEL with no args
+	err := ts.client.Do(ctx, "DEL").Err()
+	if err == nil {
+		t.Error("Expected error for DEL with no args")
+	}
+}
+
+func TestExistsWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// EXISTS with no args
+	err := ts.client.Do(ctx, "EXISTS").Err()
+	if err == nil {
+		t.Error("Expected error for EXISTS with no args")
+	}
+}
+
+func TestMGetWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// MGET with no args
+	err := ts.client.Do(ctx, "MGET").Err()
+	if err == nil {
+		t.Error("Expected error for MGET with no args")
+	}
+}
+
+func TestMSetWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// MSET with no args
+	err := ts.client.Do(ctx, "MSET").Err()
+	if err == nil {
+		t.Error("Expected error for MSET with no args")
+	}
+
+	// MSET with odd number of args
+	err = ts.client.Do(ctx, "MSET", "key1", "value1", "key2").Err()
+	if err == nil {
+		t.Error("Expected error for MSET with odd number of args")
+	}
+}
+
+// ============== Negative Tests: WRONGTYPE Errors ==============
+
+func TestWrongTypeStringToHash(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create string key
+	ts.client.Set(ctx, "stringkey", "value", 0)
+
+	// Hash operations on string should fail
+	_, err := ts.client.HSet(ctx, "stringkey", "field", "value").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for HSET on string")
+	}
+
+	_, err = ts.client.HGetAll(ctx, "stringkey").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for HGETALL on string")
+	}
+}
+
+func TestWrongTypeStringToList(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create string key
+	ts.client.Set(ctx, "stringkey", "value", 0)
+
+	// List operations on string should fail
+	_, err := ts.client.LPush(ctx, "stringkey", "item").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for LPUSH on string")
+	}
+
+	_, err = ts.client.RPush(ctx, "stringkey", "item").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for RPUSH on string")
+	}
+
+	_, err = ts.client.LLen(ctx, "stringkey").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for LLEN on string")
+	}
+}
+
+func TestWrongTypeStringToSet(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create string key
+	ts.client.Set(ctx, "stringkey", "value", 0)
+
+	// Set operations on string should fail
+	_, err := ts.client.SAdd(ctx, "stringkey", "member").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for SADD on string")
+	}
+
+	_, err = ts.client.SMembers(ctx, "stringkey").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for SMEMBERS on string")
+	}
+
+	_, err = ts.client.SCard(ctx, "stringkey").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for SCARD on string")
+	}
+}
+
+func TestWrongTypeHashToList(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create hash key
+	ts.client.HSet(ctx, "hashkey", "field", "value")
+
+	// List operations on hash should fail
+	_, err := ts.client.LPush(ctx, "hashkey", "item").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for LPUSH on hash")
+	}
+
+	_, err = ts.client.LLen(ctx, "hashkey").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for LLEN on hash")
+	}
+}
+
+func TestWrongTypeListToSet(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create list key
+	ts.client.LPush(ctx, "listkey", "item")
+
+	// Set operations on list should fail
+	_, err := ts.client.SAdd(ctx, "listkey", "member").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for SADD on list")
+	}
+
+	_, err = ts.client.SMembers(ctx, "listkey").Result()
+	if err == nil {
+		t.Error("Expected WRONGTYPE error for SMEMBERS on list")
+	}
+}
+
+// ============== Negative Tests: Authentication ==============
+
+func TestAuthWrongPassword(t *testing.T) {
+	ts := newTestServer(t, "correctpassword")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create client with wrong password
+	wrongClient := redis.NewClient(&redis.Options{
+		Addr:     ts.addr,
+		Password: "wrongpassword",
+	})
+	defer wrongClient.Close()
+
+	// Should fail with wrong password
+	_, err := wrongClient.Set(ctx, "key", "value", 0).Result()
+	if err == nil {
+		t.Error("Expected authentication error with wrong password")
+	}
+}
+
+func TestAuthEmptyPassword(t *testing.T) {
+	ts := newTestServer(t, "secretpassword")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create client with empty password when password is required
+	noPassClient := redis.NewClient(&redis.Options{
+		Addr: ts.addr,
+	})
+	defer noPassClient.Close()
+
+	// Should fail
+	_, err := noPassClient.Set(ctx, "key", "value", 0).Result()
+	if err == nil {
+		t.Error("Expected authentication error with empty password")
+	}
+}
+
+func TestAuthNotRequiredButProvided(t *testing.T) {
+	ts := newTestServer(t, "") // No password required
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// AUTH when not required should return error
+	err := ts.client.Do(ctx, "AUTH", "somepassword").Err()
+	if err == nil {
+		t.Error("Expected error for AUTH when no password configured")
+	}
+}
+
+func TestAuthRetryAfterFailure(t *testing.T) {
+	password := "correctpassword"
+	ts := newTestServer(t, password)
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create client without password
+	client := redis.NewClient(&redis.Options{
+		Addr: ts.addr,
+	})
+	defer client.Close()
+
+	// First attempt should fail
+	_, err := client.Get(ctx, "key").Result()
+	if err == nil || err == redis.Nil {
+		t.Error("Expected auth error")
+	}
+
+	// AUTH with correct password
+	err = client.Do(ctx, "AUTH", password).Err()
+	if err != nil {
+		t.Fatalf("AUTH with correct password failed: %v", err)
+	}
+
+	// Now commands should work
+	err = client.Set(ctx, "key", "value", 0).Err()
+	if err != nil {
+		t.Errorf("SET should work after successful AUTH: %v", err)
+	}
+}
+
+// ============== Negative Tests: Boundary Conditions ==============
+
+func TestEmptyKey(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Empty key should work (Redis allows it)
+	err := ts.client.Set(ctx, "", "value", 0).Err()
+	if err != nil {
+		t.Logf("SET empty key error (may be intentional): %v", err)
+	}
+
+	// If set succeeded, get should work
+	val, err := ts.client.Get(ctx, "").Result()
+	if err == nil && val != "value" {
+		t.Errorf("Expected 'value' for empty key, got %q", val)
+	}
+}
+
+func TestBinaryKey(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Key with null bytes (binary safe)
+	binaryKey := "key\x00with\x00nulls"
+	err := ts.client.Set(ctx, binaryKey, "value", 0).Err()
+	if err != nil {
+		t.Fatalf("SET binary key failed: %v", err)
+	}
+
+	val, err := ts.client.Get(ctx, binaryKey).Result()
+	if err != nil {
+		t.Fatalf("GET binary key failed: %v", err)
+	}
+	if val != "value" {
+		t.Errorf("Expected 'value', got %q", val)
+	}
+}
+
+func TestBinaryValue(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Value with null bytes and special chars
+	binaryValue := "value\x00with\x00nulls\nand\rnewlines"
+	err := ts.client.Set(ctx, "key", binaryValue, 0).Err()
+	if err != nil {
+		t.Fatalf("SET binary value failed: %v", err)
+	}
+
+	val, err := ts.client.Get(ctx, "key").Result()
+	if err != nil {
+		t.Fatalf("GET binary value failed: %v", err)
+	}
+	if val != binaryValue {
+		t.Errorf("Binary value mismatch")
+	}
+}
+
+func TestUTF8MultiByteCharacters(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	testCases := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{"accented_latin", "café_key", "résumé with naïve piñata"},
+		{"german_umlauts", "größe", "Größenänderung über Äpfel"},
+		{"french_accents", "clé_français", "être où ça coûte"},
+		{"mixed_scripts", "key_mixed", "Hello мир 世界 🌍"},
+		{"cjk_chinese", "中文键", "这是中文值"},
+		{"cjk_japanese", "日本語キー", "これは日本語の値です"},
+		{"cjk_korean", "한국어키", "이것은 한국어 값입니다"},
+		{"emoji_basic", "emoji_key", "Hello 👋 World 🌍 Test 🎉"},
+		{"currency_symbols", "price_key", "€100 £50 ¥1000 ₹500"},
+		{"math_symbols", "math_key", "∑∏∫∂√∞≠≈"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ts.client.Set(ctx, tc.key, tc.value, 0).Err()
+			if err != nil {
+				t.Fatalf("SET failed for %s: %v", tc.name, err)
+			}
+
+			val, err := ts.client.Get(ctx, tc.key).Result()
+			if err != nil {
+				t.Fatalf("GET failed for %s: %v", tc.name, err)
+			}
+			if val != tc.value {
+				t.Errorf("Value mismatch for %s: expected %q, got %q", tc.name, tc.value, val)
+			}
+		})
+	}
+}
+
+func TestBinaryAllByteValues(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create a value containing all 256 byte values (0x00-0xFF)
+	allBytes := make([]byte, 256)
+	for i := 0; i < 256; i++ {
+		allBytes[i] = byte(i)
+	}
+	binaryValue := string(allBytes)
+
+	err := ts.client.Set(ctx, "all_bytes_key", binaryValue, 0).Err()
+	if err != nil {
+		t.Fatalf("SET all bytes failed: %v", err)
+	}
+
+	val, err := ts.client.Get(ctx, "all_bytes_key").Result()
+	if err != nil {
+		t.Fatalf("GET all bytes failed: %v", err)
+	}
+	if val != binaryValue {
+		t.Errorf("All bytes value mismatch: got %d bytes, expected %d bytes", len(val), len(binaryValue))
+		// Check which bytes differ
+		for i := 0; i < len(binaryValue) && i < len(val); i++ {
+			if val[i] != binaryValue[i] {
+				t.Errorf("First mismatch at byte %d: expected 0x%02x, got 0x%02x", i, binaryValue[i], val[i])
+				break
+			}
+		}
+	}
+}
+
+func TestBinaryLargeBlob(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create a large binary blob (1MB)
+	size := 1024 * 1024
+	largeBlob := make([]byte, size)
+	for i := 0; i < size; i++ {
+		largeBlob[i] = byte(i % 256)
+	}
+	binaryValue := string(largeBlob)
+
+	err := ts.client.Set(ctx, "large_blob_key", binaryValue, 0).Err()
+	if err != nil {
+		t.Fatalf("SET large blob failed: %v", err)
+	}
+
+	val, err := ts.client.Get(ctx, "large_blob_key").Result()
+	if err != nil {
+		t.Fatalf("GET large blob failed: %v", err)
+	}
+	if len(val) != size {
+		t.Errorf("Large blob size mismatch: expected %d, got %d", size, len(val))
+	}
+	if val != binaryValue {
+		t.Errorf("Large blob content mismatch")
+	}
+}
+
+func TestBinaryInHash(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Binary data in hash field names and values
+	binaryField := "field\x00with\x00nulls"
+	binaryValue := "value\x00\x01\x02\xff\xfe"
+
+	err := ts.client.HSet(ctx, "binary_hash", binaryField, binaryValue).Err()
+	if err != nil {
+		t.Fatalf("HSET binary failed: %v", err)
+	}
+
+	val, err := ts.client.HGet(ctx, "binary_hash", binaryField).Result()
+	if err != nil {
+		t.Fatalf("HGET binary failed: %v", err)
+	}
+	if val != binaryValue {
+		t.Errorf("Binary hash value mismatch")
+	}
+
+	// Test HGETALL with binary data
+	all, err := ts.client.HGetAll(ctx, "binary_hash").Result()
+	if err != nil {
+		t.Fatalf("HGETALL binary failed: %v", err)
+	}
+	if all[binaryField] != binaryValue {
+		t.Errorf("HGETALL binary value mismatch")
+	}
+}
+
+func TestBinaryInList(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Binary data in list elements
+	binaryElements := []string{
+		"elem\x00one",
+		"elem\x01\x02\x03",
+		"elem\xff\xfe\xfd",
+	}
+
+	for _, elem := range binaryElements {
+		err := ts.client.RPush(ctx, "binary_list", elem).Err()
+		if err != nil {
+			t.Fatalf("RPUSH binary failed: %v", err)
+		}
+	}
+
+	// Verify all elements
+	vals, err := ts.client.LRange(ctx, "binary_list", 0, -1).Result()
+	if err != nil {
+		t.Fatalf("LRANGE binary failed: %v", err)
+	}
+
+	if len(vals) != len(binaryElements) {
+		t.Fatalf("Expected %d elements, got %d", len(binaryElements), len(vals))
+	}
+
+	for i, expected := range binaryElements {
+		if vals[i] != expected {
+			t.Errorf("Element %d mismatch: expected %q, got %q", i, expected, vals[i])
+		}
+	}
+}
+
+func TestBinaryInSet(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Binary data in set members
+	binaryMembers := []string{
+		"member\x00one",
+		"member\x01\x02\x03",
+		"member\xff\xfe\xfd",
+	}
+
+	for _, member := range binaryMembers {
+		err := ts.client.SAdd(ctx, "binary_set", member).Err()
+		if err != nil {
+			t.Fatalf("SADD binary failed: %v", err)
+		}
+	}
+
+	// Verify all members exist
+	for _, member := range binaryMembers {
+		exists, err := ts.client.SIsMember(ctx, "binary_set", member).Result()
+		if err != nil {
+			t.Fatalf("SISMEMBER binary failed: %v", err)
+		}
+		if !exists {
+			t.Errorf("Binary member %q not found in set", member)
+		}
+	}
+
+	// Verify count
+	count, err := ts.client.SCard(ctx, "binary_set").Result()
+	if err != nil {
+		t.Fatalf("SCARD binary failed: %v", err)
+	}
+	if count != int64(len(binaryMembers)) {
+		t.Errorf("Expected %d members, got %d", len(binaryMembers), count)
+	}
+}
+
+func TestBinaryKeyWithSpecialBytes(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Test keys with bytes that could cause issues in protocols
+	specialKeys := []struct {
+		name string
+		key  string
+	}{
+		{"null_byte", "key\x00null"},
+		{"carriage_return", "key\rwith\rCR"},
+		{"newline", "key\nwith\nnewlines"},
+		{"crlf", "key\r\nwith\r\nCRLF"},
+		{"tab", "key\twith\ttabs"},
+		{"high_bytes", "key\xff\xfe\xfd"},
+		{"mixed_special", "key\x00\r\n\t\xff"},
+	}
+
+	for _, tc := range specialKeys {
+		t.Run(tc.name, func(t *testing.T) {
+			value := "value_for_" + tc.name
+
+			err := ts.client.Set(ctx, tc.key, value, 0).Err()
+			if err != nil {
+				t.Fatalf("SET failed for %s: %v", tc.name, err)
+			}
+
+			val, err := ts.client.Get(ctx, tc.key).Result()
+			if err != nil {
+				t.Fatalf("GET failed for %s: %v", tc.name, err)
+			}
+			if val != value {
+				t.Errorf("Value mismatch for %s", tc.name)
+			}
+
+			// Verify key exists
+			exists, err := ts.client.Exists(ctx, tc.key).Result()
+			if err != nil {
+				t.Fatalf("EXISTS failed for %s: %v", tc.name, err)
+			}
+			if exists != 1 {
+				t.Errorf("Key %s should exist", tc.name)
+			}
+		})
+	}
+}
+
+func TestRenameNonExistent(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// RENAME non-existent key should fail
+	err := ts.client.Rename(ctx, "nonexistent", "newname").Err()
+	if err == nil {
+		t.Error("Expected error for RENAME non-existent key")
+	}
+}
+
+func TestRenameSameKey(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	ts.client.Set(ctx, "samekey", "value", 0)
+
+	// RENAME to same key - behavior varies by implementation
+	err := ts.client.Rename(ctx, "samekey", "samekey").Err()
+	// Note: Redis allows this, but implementation may differ
+	if err != nil {
+		t.Logf("RENAME same key error (may be intentional): %v", err)
+	}
+
+	// Key should still exist with value
+	val, err := ts.client.Get(ctx, "samekey").Result()
+	if err != nil && err != redis.Nil {
+		t.Logf("GET after same-key rename: %v", err)
+	}
+	if err == nil && val != "value" {
+		t.Errorf("Expected 'value' after same-key rename, got %q", val)
+	}
+}
+
+func TestLIndexOutOfBounds(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	ts.client.RPush(ctx, "list", "a", "b", "c")
+
+	// Positive out of bounds
+	_, err := ts.client.LIndex(ctx, "list", 999).Result()
+	if err != redis.Nil {
+		t.Errorf("Expected redis.Nil for out of bounds, got %v", err)
+	}
+
+	// Negative out of bounds
+	_, err = ts.client.LIndex(ctx, "list", -999).Result()
+	if err != redis.Nil {
+		t.Errorf("Expected redis.Nil for negative out of bounds, got %v", err)
+	}
+}
+
+func TestTTLOnNonExistentKey(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// TTL on non-existent key returns -2
+	ttl, err := ts.client.TTL(ctx, "nonexistent").Result()
+	if err != nil {
+		t.Fatalf("TTL failed: %v", err)
+	}
+	// go-redis v9 returns -2 as time.Duration(-2) for non-existent keys
+	// (special sentinel values -1 and -2 are not multiplied by precision)
+	if ttl != time.Duration(-2) {
+		t.Errorf("Expected -2ns for non-existent key, got %v", ttl)
+	}
+}
+
+func TestPersistOnNonExistentKey(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// PERSIST on non-existent key returns 0
+	ok, err := ts.client.Persist(ctx, "nonexistent").Result()
+	if err != nil {
+		t.Fatalf("PERSIST failed: %v", err)
+	}
+	if ok {
+		t.Error("Expected false for PERSIST on non-existent key")
+	}
+}
+
+func TestExpireOnNonExistentKey(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// EXPIRE on non-existent key returns 0
+	ok, err := ts.client.Expire(ctx, "nonexistent", 10*time.Second).Result()
+	if err != nil {
+		t.Fatalf("EXPIRE failed: %v", err)
+	}
+	if ok {
+		t.Error("Expected false for EXPIRE on non-existent key")
+	}
+}
+
+// ============== Negative Tests: Unknown Commands ==============
+
+func TestUnknownCommand(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	err := ts.client.Do(ctx, "UNKNOWNCOMMAND", "arg1", "arg2").Err()
+	if err == nil {
+		t.Error("Expected error for unknown command")
+	}
+}
+
+func TestEchoWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// ECHO with no args
+	err := ts.client.Do(ctx, "ECHO").Err()
+	if err == nil {
+		t.Error("Expected error for ECHO with no args")
+	}
+
+	// ECHO with too many args
+	err = ts.client.Do(ctx, "ECHO", "arg1", "arg2").Err()
+	if err == nil {
+		t.Error("Expected error for ECHO with too many args")
+	}
+}
+
+// ============== Negative Tests: Hash Commands ==============
+
+func TestHGetWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// HGET with no args
+	err := ts.client.Do(ctx, "HGET").Err()
+	if err == nil {
+		t.Error("Expected error for HGET with no args")
+	}
+
+	// HGET with only key
+	err = ts.client.Do(ctx, "HGET", "key").Err()
+	if err == nil {
+		t.Error("Expected error for HGET with only key")
+	}
+}
+
+func TestHSetWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// HSET with no args
+	err := ts.client.Do(ctx, "HSET").Err()
+	if err == nil {
+		t.Error("Expected error for HSET with no args")
+	}
+
+	// HSET with only key
+	err = ts.client.Do(ctx, "HSET", "key").Err()
+	if err == nil {
+		t.Error("Expected error for HSET with only key")
+	}
+
+	// HSET with odd number of field/value pairs
+	err = ts.client.Do(ctx, "HSET", "key", "field1", "value1", "field2").Err()
+	if err == nil {
+		t.Error("Expected error for HSET with odd field/value pairs")
+	}
+}
+
+// ============== Negative Tests: List Commands ==============
+
+func TestLPushWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// LPUSH with no args
+	err := ts.client.Do(ctx, "LPUSH").Err()
+	if err == nil {
+		t.Error("Expected error for LPUSH with no args")
+	}
+
+	// LPUSH with only key
+	err = ts.client.Do(ctx, "LPUSH", "key").Err()
+	if err == nil {
+		t.Error("Expected error for LPUSH with only key")
+	}
+}
+
+func TestLRangeWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// LRANGE with no args
+	err := ts.client.Do(ctx, "LRANGE").Err()
+	if err == nil {
+		t.Error("Expected error for LRANGE with no args")
+	}
+
+	// LRANGE with only key
+	err = ts.client.Do(ctx, "LRANGE", "key").Err()
+	if err == nil {
+		t.Error("Expected error for LRANGE with only key")
+	}
+
+	// LRANGE with only key and start
+	err = ts.client.Do(ctx, "LRANGE", "key", "0").Err()
+	if err == nil {
+		t.Error("Expected error for LRANGE without stop")
+	}
+
+	// LRANGE with non-integer indices
+	err = ts.client.Do(ctx, "LRANGE", "key", "abc", "def").Err()
+	if err == nil {
+		t.Error("Expected error for LRANGE with non-integer indices")
+	}
+}
+
+// ============== Negative Tests: Set Commands ==============
+
+func TestSAddWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// SADD with no args
+	err := ts.client.Do(ctx, "SADD").Err()
+	if err == nil {
+		t.Error("Expected error for SADD with no args")
+	}
+
+	// SADD with only key
+	err = ts.client.Do(ctx, "SADD", "key").Err()
+	if err == nil {
+		t.Error("Expected error for SADD with only key")
+	}
+}
+
+func TestSIsMemberWrongArgCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// SISMEMBER with no args
+	err := ts.client.Do(ctx, "SISMEMBER").Err()
+	if err == nil {
+		t.Error("Expected error for SISMEMBER with no args")
+	}
+
+	// SISMEMBER with only key
+	err = ts.client.Do(ctx, "SISMEMBER", "key").Err()
+	if err == nil {
+		t.Error("Expected error for SISMEMBER with only key")
+	}
+}
+
 // contains checks if s contains substr
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))

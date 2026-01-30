@@ -66,6 +66,10 @@ func (m *MockStore) Get(ctx context.Context, key string) (string, bool, error) {
 		return "", false, nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeString {
+		return "", false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	val, ok := m.strings[key]
 	return val, ok, nil
 }
@@ -91,7 +95,11 @@ func (m *MockStore) SetNX(ctx context.Context, key, value string) (bool, error) 
 
 	if m.isExpired(key) {
 		// Key expired, treat as non-existent
-	} else if _, ok := m.strings[key]; ok {
+	} else if t, ok := m.keyTypes[key]; ok {
+		if t != TypeString {
+			return false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+		}
+		// Key exists as string, return false (NX means set if not exists)
 		return false, nil
 	}
 
@@ -139,6 +147,10 @@ func (m *MockStore) Incr(ctx context.Context, key string, delta int64) (int64, e
 		// Key expired
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeString {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	var current int64
 	if val, ok := m.strings[key]; ok {
 		var err error
@@ -160,6 +172,10 @@ func (m *MockStore) Append(ctx context.Context, key, value string) (int64, error
 
 	if m.isExpired(key) {
 		// Key expired, start fresh
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeString {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	m.strings[key] = m.strings[key] + value
@@ -367,6 +383,10 @@ func (m *MockStore) HGet(ctx context.Context, key, field string) (string, bool, 
 		return "", false, nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return "", false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	if h, ok := m.hashes[key]; ok {
 		if val, ok := h[field]; ok {
 			return val, true, nil
@@ -384,7 +404,7 @@ func (m *MockStore) HSet(ctx context.Context, key string, fields map[string]stri
 	}
 
 	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
-		return 0, fmt.Errorf("WRONGTYPE")
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	if m.hashes[key] == nil {
@@ -409,6 +429,10 @@ func (m *MockStore) HDel(ctx context.Context, key string, fields []string) (int6
 
 	if m.isExpired(key) {
 		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	h, ok := m.hashes[key]
@@ -439,6 +463,10 @@ func (m *MockStore) HGetAll(ctx context.Context, key string) (map[string]string,
 		return make(map[string]string), nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	result := make(map[string]string)
 	if h, ok := m.hashes[key]; ok {
 		for k, v := range h {
@@ -456,6 +484,10 @@ func (m *MockStore) HMGet(ctx context.Context, key string, fields []string) ([]i
 
 	if m.isExpired(key) {
 		return results, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	h, ok := m.hashes[key]
@@ -482,6 +514,10 @@ func (m *MockStore) HExists(ctx context.Context, key, field string) (bool, error
 		return false, nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	if h, ok := m.hashes[key]; ok {
 		_, exists := h[field]
 		return exists, nil
@@ -495,6 +531,10 @@ func (m *MockStore) HKeys(ctx context.Context, key string) ([]string, error) {
 
 	if m.isExpired(key) {
 		return nil, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	h, ok := m.hashes[key]
@@ -518,6 +558,10 @@ func (m *MockStore) HVals(ctx context.Context, key string) ([]string, error) {
 		return nil, nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	h, ok := m.hashes[key]
 	if !ok {
 		return nil, nil
@@ -538,6 +582,10 @@ func (m *MockStore) HLen(ctx context.Context, key string) (int64, error) {
 		return 0, nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	if h, ok := m.hashes[key]; ok {
 		return int64(len(h)), nil
 	}
@@ -555,7 +603,7 @@ func (m *MockStore) LPush(ctx context.Context, key string, values []string) (int
 	}
 
 	if t, ok := m.keyTypes[key]; ok && t != TypeList {
-		return 0, fmt.Errorf("WRONGTYPE")
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	// Prepend values (in reverse order to match Redis behavior)
@@ -578,7 +626,7 @@ func (m *MockStore) RPush(ctx context.Context, key string, values []string) (int
 	}
 
 	if t, ok := m.keyTypes[key]; ok && t != TypeList {
-		return 0, fmt.Errorf("WRONGTYPE")
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	m.lists[key] = append(m.lists[key], values...)
@@ -593,6 +641,10 @@ func (m *MockStore) LPop(ctx context.Context, key string) (string, bool, error) 
 
 	if m.isExpired(key) {
 		return "", false, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeList {
+		return "", false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	list, ok := m.lists[key]
@@ -618,6 +670,10 @@ func (m *MockStore) RPop(ctx context.Context, key string) (string, bool, error) 
 		return "", false, nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeList {
+		return "", false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	list, ok := m.lists[key]
 	if !ok || len(list) == 0 {
 		return "", false, nil
@@ -641,6 +697,10 @@ func (m *MockStore) LLen(ctx context.Context, key string) (int64, error) {
 		return 0, nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeList {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	return int64(len(m.lists[key])), nil
 }
 
@@ -650,6 +710,10 @@ func (m *MockStore) LRange(ctx context.Context, key string, start, stop int64) (
 
 	if m.isExpired(key) {
 		return []string{}, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeList {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	list, ok := m.lists[key]
@@ -694,6 +758,10 @@ func (m *MockStore) LIndex(ctx context.Context, key string, index int64) (string
 		return "", false, nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeList {
+		return "", false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	list, ok := m.lists[key]
 	if !ok {
 		return "", false, nil
@@ -721,7 +789,7 @@ func (m *MockStore) SAdd(ctx context.Context, key string, members []string) (int
 	}
 
 	if t, ok := m.keyTypes[key]; ok && t != TypeSet {
-		return 0, fmt.Errorf("WRONGTYPE")
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	if m.sets[key] == nil {
@@ -746,6 +814,10 @@ func (m *MockStore) SRem(ctx context.Context, key string, members []string) (int
 
 	if m.isExpired(key) {
 		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	s, ok := m.sets[key]
@@ -776,6 +848,10 @@ func (m *MockStore) SMembers(ctx context.Context, key string) ([]string, error) 
 		return nil, nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeSet {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	s, ok := m.sets[key]
 	if !ok {
 		return nil, nil
@@ -797,6 +873,10 @@ func (m *MockStore) SIsMember(ctx context.Context, key, member string) (bool, er
 		return false, nil
 	}
 
+	if t, ok := m.keyTypes[key]; ok && t != TypeSet {
+		return false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	if s, ok := m.sets[key]; ok {
 		_, exists := s[member]
 		return exists, nil
@@ -810,6 +890,10 @@ func (m *MockStore) SCard(ctx context.Context, key string) (int64, error) {
 
 	if m.isExpired(key) {
 		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	if s, ok := m.sets[key]; ok {
