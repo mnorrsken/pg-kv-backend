@@ -101,6 +101,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -129,7 +130,63 @@ jobs:
             echo "changed=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create release
+      - name: Log in to Container Registry
+        if: steps.version-check.outputs.changed == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install crane
+        if: steps.version-check.outputs.changed == 'true'
+        uses: imjasonh/setup-crane@v0.3
+
+      - name: Tag Docker image
+        if: steps.version-check.outputs.changed == 'true'
+        run: |
+          APP_VERSION="${{ steps.version-check.outputs.app_version }}"
+          SOURCE_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
+          
+          echo "Source image: ${SOURCE_IMAGE}"
+          echo "App version: ${APP_VERSION}"
+          
+          # Tag with release version
+          crane tag ${SOURCE_IMAGE} ${APP_VERSION}
+          
+          # Tag as latest
+          crane tag ${SOURCE_IMAGE} latest
+          
+          echo "Tagged ${SOURCE_IMAGE} as ${APP_VERSION} and latest"
+
+      - name: Set up Helm
+        if: steps.version-check.outputs.changed == 'true'
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Log in to Container Registry for Helm
+        if: steps.version-check.outputs.changed == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+      - name: Package and push Helm chart
+        if: steps.version-check.outputs.changed == 'true'
+        run: |
+          CHART_VERSION="${{ steps.version-check.outputs.chart_version }}"
+          
+          helm package charts/pg-kv-backend
+          CHART_PACKAGE=$(ls pg-kv-backend-*.tgz)
+          
+          # Push versioned chart
+          helm push ${CHART_PACKAGE} oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+          
+          # Tag as latest using crane
+          CHART_IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/pg-kv-backend:${CHART_VERSION}"
+          crane tag ${CHART_IMAGE} latest
+          
+          echo "Pushed chart version ${CHART_VERSION} and tagged as latest"
+
+      - name: Create GitHub release
         if: steps.version-check.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -157,87 +214,3 @@ jobs:
           
           echo "Created release ${APP_VERSION}"
 
-  tag-release:
-    runs-on: ubuntu-latest
-    needs: test
-    if: github.event_name == 'release'
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install crane
-        uses: imjasonh/setup-crane@v0.3
-
-      - name: Tag release image
-        run: |
-          # Find the image by the commit SHA that the release tag points to
-          RELEASE_SHA="${{ github.event.release.target_commitish }}"
-          # If target_commitish is a branch name, get the actual SHA
-          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
-            RELEASE_SHA="${{ github.sha }}"
-          fi
-          
-          SOURCE_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${RELEASE_SHA}"
-          RELEASE_TAG="${{ github.event.release.tag_name }}"
-          
-          echo "Source image: ${SOURCE_IMAGE}"
-          echo "Release tag: ${RELEASE_TAG}"
-          
-          # Tag with release version
-          crane tag ${SOURCE_IMAGE} ${RELEASE_TAG}
-          
-          # Tag as latest
-          crane tag ${SOURCE_IMAGE} latest
-          
-          echo "Tagged ${SOURCE_IMAGE} as ${RELEASE_TAG} and latest"
-
-  publish-helm-chart:
-    runs-on: ubuntu-latest
-    needs: test
-    if: github.event_name == 'release'
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v3.14.0
-
-      - name: Log in to Container Registry
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
-
-      - name: Install crane
-        uses: imjasonh/setup-crane@v0.3
-
-      - name: Package Helm chart
-        run: helm package charts/pg-kv-backend
-
-      - name: Push Helm chart to GHCR
-        run: |
-          CHART_PACKAGE=$(ls pg-kv-backend-*.tgz)
-          CHART_VERSION=$(grep '^version:' charts/pg-kv-backend/Chart.yaml | awk '{print $2}' | tr -d '"')
-          
-          # Push versioned chart
-          helm push ${CHART_PACKAGE} oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
-          
-          # Tag as latest using crane
-          CHART_IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/pg-kv-backend:${CHART_VERSION}"
-          crane tag ${CHART_IMAGE} latest
-          
-          echo "Pushed chart version ${CHART_VERSION} and tagged as latest"
