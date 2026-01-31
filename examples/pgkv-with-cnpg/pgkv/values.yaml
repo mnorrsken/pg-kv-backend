@@ -11,4 +11,4 @@ postgresql:
     passwordKey: password
     portKey: port
     hostKey: host
-    dbnameKey: dbname
+    databaseKey: dbname

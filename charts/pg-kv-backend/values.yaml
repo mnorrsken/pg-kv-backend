@@ -108,7 +108,7 @@ postgresql:
     # Key in the secret containing the port (optional)
     portKey: ""
     # Key in the secret containing the database name (optional)
-    dbnameKey: ""
+    databaseKey: ""
   
   # Authentication configuration
   auth:

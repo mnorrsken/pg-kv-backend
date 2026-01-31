@@ -60,7 +60,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
-                  key: {{ .Values.postgresql.existingSecret.hostKey | default "host" }}
+                  key: {{ .Values.postgresql.existingSecret.hostKey }}
             {{- else }}
             - name: PG_HOST
               value: {{ .Values.postgresql.host | quote }}
@@ -70,17 +70,17 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
-                  key: {{ .Values.postgresql.existingSecret.portKey | default "port" }}
+                  key: {{ .Values.postgresql.existingSecret.portKey }}
             {{- else }}
             - name: PG_PORT
               value: {{ .Values.postgresql.port | quote }}
             {{- end }}
-            {{- if .Values.postgresql.existingSecret.dbnameKey }}
+            {{- if .Values.postgresql.existingSecret.databaseKey }}
             - name: PG_DATABASE
               valueFrom:
                 secretKeyRef:
                   name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
-                  key: {{ .Values.postgresql.existingSecret.dbnameKey | default "dbname" }}
+                  key: {{ .Values.postgresql.existingSecret.databaseKey }}
             {{- else }}
             - name: PG_DATABASE
               value: {{ .Values.postgresql.database | quote }}
@@ -101,13 +101,13 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
-                  key: {{ .Values.postgresql.existingSecret.passwordKey | default "password" }}
+                  key: {{ .Values.postgresql.existingSecret.passwordKey }}
             {{- if or .Values.redis.password.value .Values.redis.password.existingSecret.name }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "pg-kv-backend.redisSecretName" . }}
-                  key: {{ .Values.redis.password.existingSecret.key | default "redis-password" }}
+                  key: {{ .Values.redis.password.existingSecret.key }}
             {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: METRICS_ADDR

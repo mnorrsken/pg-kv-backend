@@ -237,7 +237,7 @@ The following table lists the configurable parameters of the pg-kv-backend chart
 | `postgresql.existingSecret.passwordKey` | Key in secret containing the password | `password` |
 | `postgresql.existingSecret.hostKey` | Key in secret containing the host | `""` |
 | `postgresql.existingSecret.portKey` | Key in secret containing the port | `""` |
-| `postgresql.existingSecret.dbnameKey` | Key in secret containing the database name | `""` |
+| `postgresql.existingSecret.databaseKey` | Key in secret containing the database name | `""` |
 
 #### Cache Configuration
 
