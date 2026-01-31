@@ -164,6 +164,19 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 					}
 					response = resp.Value{Type: resp.Error, Str: "NOAUTH Authentication required."}
 				}
+			} else if cmdName == "MULTI" {
+				// Start a transaction
+				response = s.handler.HandleMulti(client)
+			} else if cmdName == "EXEC" {
+				// Execute queued commands
+				response = s.handler.HandleExec(ctx, client)
+			} else if cmdName == "DISCARD" {
+				// Discard the transaction
+				response = s.handler.HandleDiscard(client)
+			} else if client.InTransaction() {
+				// Queue commands if in transaction mode (except MULTI, EXEC, DISCARD which are handled above)
+				client.QueueCommand(cmd)
+				response = resp.Value{Type: resp.SimpleString, Str: "QUEUED"}
 			} else if cmdName == "CLIENT" {
 				// Handle CLIENT commands with client state
 				response = s.handler.HandleClient(cmd, client)

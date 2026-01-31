@@ -5,8 +5,19 @@ import (
 	"time"
 )
 
-// Backend defines the interface for Redis-compatible storage operations
-type Backend interface {
+// KeyType represents the type of a Redis key
+type KeyType string
+
+const (
+	TypeString KeyType = "string"
+	TypeHash   KeyType = "hash"
+	TypeList   KeyType = "list"
+	TypeSet    KeyType = "set"
+	TypeNone   KeyType = "none"
+)
+
+// Operations defines the common storage operations available in both regular and transaction contexts
+type Operations interface {
 	// String commands
 	Get(ctx context.Context, key string) (string, bool, error)
 	Set(ctx context.Context, key, value string, ttl time.Duration) error
@@ -56,10 +67,29 @@ type Backend interface {
 
 	// Server commands
 	DBSize(ctx context.Context) (int64, error)
+}
+
+// Backend extends Operations with lifecycle and transaction support
+type Backend interface {
+	Operations
+
+	// Server commands (not available in transactions)
 	FlushDB(ctx context.Context) error
+
+	// Transaction support
+	BeginTx(ctx context.Context) (Transaction, error)
 
 	// Lifecycle
 	Close()
+}
+
+// Transaction extends Operations with commit/rollback
+type Transaction interface {
+	Operations
+
+	// Transaction control
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
 }
 
 // Ensure Store implements Backend

@@ -273,5 +273,13 @@ func (s *CachedStore) FlushDB(ctx context.Context) error {
 	return nil
 }
 
+// ============== Transaction Support ==============
+
+// BeginTx starts a transaction on the underlying backend
+// Note: Transactions bypass the cache and operate directly on the backend
+func (s *CachedStore) BeginTx(ctx context.Context) (storage.Transaction, error) {
+	return s.backend.BeginTx(ctx)
+}
+
 // Ensure CachedStore implements Backend
 var _ storage.Backend = (*CachedStore)(nil)

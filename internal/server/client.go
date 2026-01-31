@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/mnorrsken/postkeys/internal/resp"
 )
 
 var clientIDCounter uint64
@@ -19,6 +21,10 @@ type ClientState struct {
 	LibName     string
 	LibVersion  string
 	mu          sync.RWMutex
+	
+	// Transaction state
+	inTransaction   bool
+	queuedCommands  []resp.Value
 }
 
 // NewClientState creates a new client state for a connection
@@ -79,4 +85,59 @@ func (c *ClientState) GetInfo() string {
 	}
 	
 	return info
+}
+
+// InTransaction returns true if the client is in a MULTI transaction
+func (c *ClientState) InTransaction() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.inTransaction
+}
+
+// StartTransaction starts a MULTI transaction
+func (c *ClientState) StartTransaction() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.inTransaction {
+		return fmt.Errorf("ERR MULTI calls can not be nested")
+	}
+	c.inTransaction = true
+	c.queuedCommands = nil
+	return nil
+}
+
+// QueueCommand adds a command to the transaction queue
+func (c *ClientState) QueueCommand(cmd resp.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.queuedCommands = append(c.queuedCommands, cmd)
+}
+
+// GetQueuedCommands returns the queued commands and clears them
+func (c *ClientState) GetQueuedCommands() []resp.Value {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cmds := c.queuedCommands
+	c.queuedCommands = nil
+	c.inTransaction = false
+	return cmds
+}
+
+// DiscardTransaction discards the current transaction
+func (c *ClientState) DiscardTransaction() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.inTransaction {
+		return fmt.Errorf("ERR DISCARD without MULTI")
+	}
+	c.inTransaction = false
+	c.queuedCommands = nil
+	return nil
+}
+
+// QueueLength returns the number of queued commands
+func (c *ClientState) QueueLength() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.queuedCommands)
 }
