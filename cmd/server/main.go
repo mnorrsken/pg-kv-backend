@@ -58,11 +58,14 @@ func main() {
 	h := handler.New(backend, cfg.RedisPassword)
 
 	// Create and start server
-	srv := server.New(cfg.RedisAddr, h)
+	srv := server.NewWithDebug(cfg.RedisAddr, h, cfg.Debug)
 	if err := srv.Start(ctx); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 
+	if cfg.Debug {
+		log.Println("Debug logging is enabled (DEBUG=1)")
+	}
 	if cfg.RedisPassword != "" {
 		log.Println("Authentication is enabled")
 	}

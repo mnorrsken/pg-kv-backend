@@ -121,6 +121,10 @@ spec:
             - name: CACHE_MAX_SIZE
               value: {{ .Values.cache.maxSize | quote }}
             {{- end }}
+            {{- if .Values.debug }}
+            - name: DEBUG
+              value: "1"
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

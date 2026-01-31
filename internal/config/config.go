@@ -30,6 +30,9 @@ type Config struct {
 	CacheEnabled bool
 	CacheTTL     time.Duration
 	CacheMaxSize int
+
+	// Debug mode
+	Debug bool
 }
 
 // Load loads configuration from environment variables
@@ -47,6 +50,7 @@ func Load() *Config {
 		CacheEnabled:  getEnvBool("CACHE_ENABLED", false),
 		CacheTTL:      getEnvDuration("CACHE_TTL", 250*time.Millisecond),
 		CacheMaxSize:  getEnvInt("CACHE_MAX_SIZE", 10000),
+		Debug:         getEnv("DEBUG", "") == "1",
 	}
 }
 

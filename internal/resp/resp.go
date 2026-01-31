@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strconv"
 )
 
@@ -42,11 +43,28 @@ type Value struct {
 // Reader reads RESP values from an io.Reader
 type Reader struct {
 	reader *bufio.Reader
+	debug  bool
 }
 
 // NewReader creates a new RESP reader
 func NewReader(r io.Reader) *Reader {
-	return &Reader{reader: bufio.NewReader(r)}
+	return &Reader{reader: bufio.NewReader(r), debug: false}
+}
+
+// NewReaderWithDebug creates a new RESP reader with debug logging enabled
+func NewReaderWithDebug(r io.Reader, debug bool) *Reader {
+	return &Reader{reader: bufio.NewReader(r), debug: debug}
+}
+
+// SetDebug enables or disables debug logging
+func (r *Reader) SetDebug(debug bool) {
+	r.debug = debug
+}
+
+func (r *Reader) debugLog(format string, v ...interface{}) {
+	if r.debug {
+		log.Printf("[RESP DEBUG] "+format, v...)
+	}
 }
 
 // Read reads a single RESP value
@@ -68,6 +86,11 @@ func (r *Reader) Read() (Value, error) {
 	case Array:
 		return r.readArray()
 	default:
+		if r.debug {
+			// Peek ahead to get the rest of the line for debugging
+			peek, _ := r.reader.Peek(min(256, r.reader.Buffered()))
+			r.debugLog("unknown RESP type byte: 0x%02x (%q), remaining buffer: %q", typeByte, string(typeByte), string(peek))
+		}
 		return Value{}, fmt.Errorf("unknown RESP type: %c", typeByte)
 	}
 }

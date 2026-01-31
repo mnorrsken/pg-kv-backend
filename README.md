@@ -45,6 +45,7 @@ Environment variables:
 | `CACHE_ENABLED` | Enable in-memory cache (opt-in) | `false` |
 | `CACHE_TTL` | Cache TTL duration | `250ms` |
 | `CACHE_MAX_SIZE` | Maximum cached entries | `10000` |
+| `DEBUG` | Enable debug logging (set to `1` to enable) | `` |
 
 ### In-Memory Cache
 
@@ -252,6 +253,12 @@ The following table lists the configurable parameters of the postkeys chart and 
 | `cache.maxSize` | Maximum number of cached entries | `10000` |
 
 > **Note:** In multi-pod deployments, cached data may be stale for up to TTL duration.
+
+#### Debug Configuration
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `debug` | Enable debug logging (sets DEBUG=1) | `false` |
 
 #### Metrics Configuration
 

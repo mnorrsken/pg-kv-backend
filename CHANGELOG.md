@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8] - 2026-01-31
+
+### Added
+- Debug logging support via `DEBUG=1` environment variable
+- Enhanced error logging with remote address details when debug enabled
+- RESP parser logs full buffer content on unknown type errors in debug mode
+- Helm chart `debug` option to enable debug logging
+
 ## [0.7] - 2026-01-31
 
 ### Added

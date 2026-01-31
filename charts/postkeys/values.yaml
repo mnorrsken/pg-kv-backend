@@ -68,6 +68,9 @@ tolerations: []
 
 affinity: {}
 
+# Enable debug logging (sets DEBUG=1)
+debug: false
+
 # Redis server configuration
 redis:
   # Address to listen on (inside the container)

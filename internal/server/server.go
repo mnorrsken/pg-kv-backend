@@ -21,6 +21,7 @@ type Server struct {
 	listener net.Listener
 	quit     chan struct{}
 	wg       sync.WaitGroup
+	debug    bool
 }
 
 // New creates a new server
@@ -29,6 +30,17 @@ func New(addr string, h *handler.Handler) *Server {
 		addr:    addr,
 		handler: h,
 		quit:    make(chan struct{}),
+		debug:   false,
+	}
+}
+
+// NewWithDebug creates a new server with debug logging
+func NewWithDebug(addr string, h *handler.Handler, debug bool) *Server {
+	return &Server{
+		addr:    addr,
+		handler: h,
+		quit:    make(chan struct{}),
+		debug:   debug,
 	}
 }
 
@@ -91,7 +103,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	defer s.wg.Done()
 	defer conn.Close()
 
-	reader := resp.NewReader(conn)
+	reader := resp.NewReaderWithDebug(conn, s.debug)
 	writer := resp.NewWriter(conn)
 
 	// Create client state for this connection
@@ -115,7 +127,11 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			if err == io.EOF {
 				return
 			}
-			log.Printf("Read error: %v", err)
+			if s.debug {
+				log.Printf("[DEBUG] Read error from %s: %v", conn.RemoteAddr(), err)
+			} else {
+				log.Printf("Read error: %v", err)
+			}
 			return
 		}
 
@@ -149,11 +165,19 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 		// Write response
 		if err := writer.WriteValue(response); err != nil {
-			log.Printf("Write error: %v", err)
+			if s.debug {
+				log.Printf("[DEBUG] Write error to %s: %v", conn.RemoteAddr(), err)
+			} else {
+				log.Printf("Write error: %v", err)
+			}
 			return
 		}
 		if err := writer.Flush(); err != nil {
-			log.Printf("Flush error: %v", err)
+			if s.debug {
+				log.Printf("[DEBUG] Flush error to %s: %v", conn.RemoteAddr(), err)
+			} else {
+				log.Printf("Flush error: %v", err)
+			}
 			return
 		}
 	}
