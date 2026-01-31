@@ -2,14 +2,14 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "pg-kv-backend.fullname" . }}
+  name: {{ include "postkeys.fullname" . }}
   labels:
-    {{- include "pg-kv-backend.labels" . | nindent 4 }}
+    {{- include "postkeys.labels" . | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ include "pg-kv-backend.fullname" . }}
+    name: {{ include "postkeys.fullname" . }}
   minReplicas: {{ .Values.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.autoscaling.maxReplicas }}
   metrics:

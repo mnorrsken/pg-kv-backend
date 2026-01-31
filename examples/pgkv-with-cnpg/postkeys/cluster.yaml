@@ -1,7 +1,7 @@
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: pgkv-db
+  name: postkeys-db
 spec:
   instances: 3
   storage:

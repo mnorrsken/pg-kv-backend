@@ -111,11 +111,11 @@ jobs:
       - name: Check if appVersion changed
         id: version-check
         run: |
-          NEW_APP_VERSION=$(grep '^appVersion:' charts/pg-kv-backend/Chart.yaml | awk '{print $2}' | tr -d '"')
-          NEW_CHART_VERSION=$(grep '^version:' charts/pg-kv-backend/Chart.yaml | awk '{print $2}' | tr -d '"')
+          NEW_APP_VERSION=$(grep '^appVersion:' charts/postkeys/Chart.yaml | awk '{print $2}' | tr -d '"')
+          NEW_CHART_VERSION=$(grep '^version:' charts/postkeys/Chart.yaml | awk '{print $2}' | tr -d '"')
           
           # Get old versions from previous commit
-          git show HEAD~1:charts/pg-kv-backend/Chart.yaml > /tmp/old-chart.yaml 2>/dev/null || echo -e "appVersion: \"\"\nversion: \"\"" > /tmp/old-chart.yaml
+          git show HEAD~1:charts/postkeys/Chart.yaml > /tmp/old-chart.yaml 2>/dev/null || echo -e "appVersion: \"\"\nversion: \"\"" > /tmp/old-chart.yaml
           OLD_APP_VERSION=$(grep '^appVersion:' /tmp/old-chart.yaml | awk '{print $2}' | tr -d '"')
           OLD_CHART_VERSION=$(grep '^version:' /tmp/old-chart.yaml | awk '{print $2}' | tr -d '"')
           
@@ -174,14 +174,14 @@ jobs:
         run: |
           CHART_VERSION="${{ steps.version-check.outputs.chart_version }}"
           
-          helm package charts/pg-kv-backend
-          CHART_PACKAGE=$(ls pg-kv-backend-*.tgz)
+          helm package charts/postkeys
+          CHART_PACKAGE=$(ls postkeys-*.tgz)
           
           # Push versioned chart
           helm push ${CHART_PACKAGE} oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
           
           # Tag as latest using crane
-          CHART_IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/pg-kv-backend:${CHART_VERSION}"
+          CHART_IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/postkeys:${CHART_VERSION}"
           crane tag ${CHART_IMAGE} latest
           
           echo "Pushed chart version ${CHART_VERSION} and tagged as latest"
@@ -209,7 +209,7 @@ jobs:
           
           ## Helm Chart (v${CHART_VERSION})
           \`\`\`
-          helm pull oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/pg-kv-backend --version ${CHART_VERSION}
+          helm pull oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/postkeys --version ${CHART_VERSION}
           \`\`\`"
           
           echo "Created release ${APP_VERSION}"

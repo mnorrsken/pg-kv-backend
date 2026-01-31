@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/mnorrsken/pg-kv-backend/internal/metrics"
-	"github.com/mnorrsken/pg-kv-backend/internal/storage"
+	"github.com/mnorrsken/postkeys/internal/metrics"
+	"github.com/mnorrsken/postkeys/internal/storage"
 )
 
 // CachedStore wraps a storage.Backend with an in-memory cache

@@ -1,6 +1,6 @@
-# pg-kv-backend with CloudNativePG Example
+# postkeys with CloudNativePG Example
 
-This example demonstrates how to deploy pg-kv-backend on Kubernetes using [CloudNativePG](https://cloudnative-pg.io/) as the PostgreSQL backend.
+This example demonstrates how to deploy postkeys on Kubernetes using [CloudNativePG](https://cloudnative-pg.io/) as the PostgreSQL backend.
 
 ## Overview
 
@@ -8,7 +8,7 @@ This setup uses [Kustomize](https://kustomize.io/) to deploy:
 
 1. **CloudNativePG Operator** - A Kubernetes operator for managing PostgreSQL clusters
 2. **PostgreSQL Cluster** - A 3-instance HA PostgreSQL cluster managed by CNPG
-3. **pg-kv-backend** - The Redis-compatible server backed by PostgreSQL
+3. **postkeys** - The Redis-compatible server backed by PostgreSQL
 
 ## Prerequisites
 
@@ -19,21 +19,21 @@ This setup uses [Kustomize](https://kustomize.io/) to deploy:
 ## Structure
 
 ```
-pgkv-with-cnpg/
+postkeys-with-cnpg/
 ├── kustomization.yaml      # Main kustomization file
 ├── ns.yaml                 # Namespace definitions
 ├── cnpg/
 │   └── kustomization.yaml  # CloudNativePG operator deployment
-└── pgkv/
-    ├── kustomization.yaml  # pg-kv-backend helm chart deployment
+└── postkeys/
+    ├── kustomization.yaml  # postkeys helm chart deployment
     ├── cluster.yaml        # CNPG PostgreSQL cluster definition
-    └── values.yaml         # Helm values for pg-kv-backend
+    └── values.yaml         # Helm values for postkeys
 ```
 
 ## Namespaces
 
 - `cnpg-system` - CloudNativePG operator
-- `myapp` - PostgreSQL cluster and pg-kv-backend
+- `myapp` - PostgreSQL cluster and postkeys
 
 ## Deployment
 
@@ -61,22 +61,22 @@ kubectl kustomize --enable-helm . | less
    kubectl wait --for=condition=Available deployment/cnpg-controller-manager -n cnpg-system --timeout=120s
    ```
 
-3. Deploy the PostgreSQL cluster and pg-kv-backend:
+3. Deploy the PostgreSQL cluster and postkeys:
    ```bash
-   kubectl apply -k pgkv/
+   kubectl apply -k postkeys/
    ```
 
 ## Configuration
 
 ### PostgreSQL Cluster
 
-The [cluster.yaml](pgkv/cluster.yaml) defines a 3-instance PostgreSQL cluster:
+The [cluster.yaml](postkeys/cluster.yaml) defines a 3-instance PostgreSQL cluster:
 
 ```yaml
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: pgkv-db
+  name: postkeys-db
 spec:
   instances: 3
   storage:
@@ -85,15 +85,15 @@ spec:
 
 Adjust `instances` and `storage.size` based on your requirements.
 
-### pg-kv-backend
+### postkeys
 
-The [values.yaml](pgkv/values.yaml) configures pg-kv-backend:
+The [values.yaml](postkeys/values.yaml) configures postkeys:
 
-- **replicaCount**: Number of pg-kv-backend pods (default: 2)
+- **replicaCount**: Number of postkeys pods (default: 2)
 - **redis.password.value**: Password for Redis API authentication
-- **postgresql.existingSecret**: Uses the secret created by CNPG (`pgkv-db-app`)
+- **postgresql.existingSecret**: Uses the secret created by CNPG (`postkeys-db-app`)
 
-CNPG automatically creates a secret named `<cluster-name>-app` containing database credentials. The pg-kv-backend Helm chart is configured to use this secret.
+CNPG automatically creates a secret named `<cluster-name>-app` containing database credentials. The postkeys Helm chart is configured to use this secret.
 
 ## Verification
 
@@ -102,14 +102,14 @@ CNPG automatically creates a secret named `<cluster-name>-app` containing databa
    kubectl get cluster -n myapp
    ```
 
-2. Check pg-kv-backend pods:
+2. Check postkeys pods:
    ```bash
-   kubectl get pods -n myapp -l app.kubernetes.io/name=pg-kv-backend
+   kubectl get pods -n myapp -l app.kubernetes.io/name=postkeys
    ```
 
 3. Test the connection:
    ```bash
-   kubectl port-forward svc/pg-kv-backend 6379:6379 -n myapp
+   kubectl port-forward svc/postkeys 6379:6379 -n myapp
    redis-cli -p 6379 -a demo-password PING
    ```
 
@@ -123,5 +123,5 @@ kubectl delete -k .
 
 - The CloudNativePG operator must be running before creating the PostgreSQL cluster
 - CNPG handles PostgreSQL high availability, failover, and backups
-- pg-kv-backend connects to the read-write service endpoint managed by CNPG
+- postkeys connects to the read-write service endpoint managed by CNPG
 - For production, configure persistent storage classes and backup destinations in the Cluster resource

@@ -14,7 +14,7 @@ var (
 	// CommandsTotal counts the total number of commands processed
 	CommandsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "pgkv_commands_total",
+			Name: "postkeys_commands_total",
 			Help: "Total number of Redis commands processed",
 		},
 		[]string{"command"},
@@ -23,7 +23,7 @@ var (
 	// CommandDuration measures the duration of command execution
 	CommandDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "pgkv_command_duration_seconds",
+			Name:    "postkeys_command_duration_seconds",
 			Help:    "Duration of Redis command execution in seconds",
 			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 16), // 0.1ms to ~6.5s
 		},
@@ -33,7 +33,7 @@ var (
 	// CommandErrors counts the number of command errors
 	CommandErrors = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "pgkv_command_errors_total",
+			Name: "postkeys_command_errors_total",
 			Help: "Total number of Redis command errors",
 		},
 		[]string{"command"},
@@ -42,7 +42,7 @@ var (
 	// ActiveConnections tracks the number of active client connections
 	ActiveConnections = promauto.NewGauge(
 		prometheus.GaugeOpts{
-			Name: "pgkv_active_connections",
+			Name: "postkeys_active_connections",
 			Help: "Number of active client connections",
 		},
 	)
@@ -50,7 +50,7 @@ var (
 	// ConnectionsTotal counts the total number of connections accepted
 	ConnectionsTotal = promauto.NewCounter(
 		prometheus.CounterOpts{
-			Name: "pgkv_connections_total",
+			Name: "postkeys_connections_total",
 			Help: "Total number of connections accepted",
 		},
 	)
@@ -58,7 +58,7 @@ var (
 	// CacheHits counts the number of cache hits
 	CacheHits = promauto.NewCounter(
 		prometheus.CounterOpts{
-			Name: "pgkv_cache_hits_total",
+			Name: "postkeys_cache_hits_total",
 			Help: "Total number of cache hits",
 		},
 	)
@@ -66,7 +66,7 @@ var (
 	// CacheMisses counts the number of cache misses
 	CacheMisses = promauto.NewCounter(
 		prometheus.CounterOpts{
-			Name: "pgkv_cache_misses_total",
+			Name: "postkeys_cache_misses_total",
 			Help: "Total number of cache misses",
 		},
 	)

@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: pgkv
+      POSTGRES_DB: postkeys
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -17,7 +17,7 @@ services:
       timeout: 5s
       retries: 5
 
-  pg-kv-backend:
+  postkeys:
     build: .
     ports:
       - "6379:6379"
@@ -28,7 +28,7 @@ services:
       PG_PORT: 5432
       PG_USER: postgres
       PG_PASSWORD: postgres
-      PG_DATABASE: pgkv
+      PG_DATABASE: postkeys
       PG_SSLMODE: disable
     depends_on:
       postgres:

@@ -7,12 +7,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/mnorrsken/pg-kv-backend/internal/cache"
-	"github.com/mnorrsken/pg-kv-backend/internal/config"
-	"github.com/mnorrsken/pg-kv-backend/internal/handler"
-	"github.com/mnorrsken/pg-kv-backend/internal/metrics"
-	"github.com/mnorrsken/pg-kv-backend/internal/server"
-	"github.com/mnorrsken/pg-kv-backend/internal/storage"
+	"github.com/mnorrsken/postkeys/internal/cache"
+	"github.com/mnorrsken/postkeys/internal/config"
+	"github.com/mnorrsken/postkeys/internal/handler"
+	"github.com/mnorrsken/postkeys/internal/metrics"
+	"github.com/mnorrsken/postkeys/internal/server"
+	"github.com/mnorrsken/postkeys/internal/storage"
 )
 
 func main() {
@@ -66,7 +66,7 @@ func main() {
 	if cfg.RedisPassword != "" {
 		log.Println("Authentication is enabled")
 	}
-	log.Printf("pg-kv-backend is ready to accept connections on %s", cfg.RedisAddr)
+	log.Printf("postkeys is ready to accept connections on %s", cfg.RedisAddr)
 
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)

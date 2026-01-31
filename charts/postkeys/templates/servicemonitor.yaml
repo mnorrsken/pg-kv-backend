@@ -2,19 +2,19 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ include "pg-kv-backend.fullname" . }}
+  name: {{ include "postkeys.fullname" . }}
   {{- if .Values.metrics.serviceMonitor.namespace }}
   namespace: {{ .Values.metrics.serviceMonitor.namespace }}
   {{- end }}
   labels:
-    {{- include "pg-kv-backend.labels" . | nindent 4 }}
+    {{- include "postkeys.labels" . | nindent 4 }}
     {{- with .Values.metrics.serviceMonitor.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
   selector:
     matchLabels:
-      {{- include "pg-kv-backend.selectorLabels" . | nindent 6 }}
+      {{- include "postkeys.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: metrics
   namespaceSelector:
     matchNames:

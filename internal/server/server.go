@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mnorrsken/pg-kv-backend/internal/handler"
-	"github.com/mnorrsken/pg-kv-backend/internal/resp"
+	"github.com/mnorrsken/postkeys/internal/handler"
+	"github.com/mnorrsken/postkeys/internal/resp"
 )
 
 // Server represents a Redis-compatible server

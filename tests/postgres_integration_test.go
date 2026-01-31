@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mnorrsken/pg-kv-backend/internal/handler"
-	"github.com/mnorrsken/pg-kv-backend/internal/server"
-	"github.com/mnorrsken/pg-kv-backend/internal/storage"
+	"github.com/mnorrsken/postkeys/internal/server"
+	"github.com/mnorrsken/postkeys/internal/storage"
+	"github.com/mnorrsken/postkeysrnal/handler"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -554,7 +554,7 @@ func TestPgBinaryInHash(t *testing.T) {
 	// Note: PostgreSQL TEXT columns don't support null bytes or invalid UTF-8.
 	// Hash field names use TEXT for indexing, so we test with valid UTF-8 field names.
 	// Binary data (including null bytes and arbitrary bytes) works in values (BYTEA).
-	field := "field_with_special_chars_αβγ"   // Valid UTF-8 field name
+	field := "field_with_special_chars_αβγ"    // Valid UTF-8 field name
 	binaryValue := "value\x00\x01\x02\xff\xfe" // Binary value with null bytes (BYTEA)
 
 	err := ts.client.HSet(ctx, "binary_hash", field, binaryValue).Err()

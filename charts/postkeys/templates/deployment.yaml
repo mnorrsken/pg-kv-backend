@@ -1,16 +1,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "pg-kv-backend.fullname" . }}
+  name: {{ include "postkeys.fullname" . }}
   labels:
-    {{- include "pg-kv-backend.labels" . | nindent 4 }}
+    {{- include "postkeys.labels" . | nindent 4 }}
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "pg-kv-backend.selectorLabels" . | nindent 6 }}
+      {{- include "postkeys.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -18,13 +18,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "pg-kv-backend.selectorLabels" . | nindent 8 }}
+        {{- include "postkeys.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "pg-kv-backend.serviceAccountName" . }}
+      serviceAccountName: {{ include "postkeys.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -59,7 +59,7 @@ spec:
             - name: PG_HOST
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
+                  name: {{ include "postkeys.postgresqlSecretName" . }}
                   key: {{ .Values.postgresql.existingSecret.hostKey }}
             {{- else }}
             - name: PG_HOST
@@ -69,7 +69,7 @@ spec:
             - name: PG_PORT
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
+                  name: {{ include "postkeys.postgresqlSecretName" . }}
                   key: {{ .Values.postgresql.existingSecret.portKey }}
             {{- else }}
             - name: PG_PORT
@@ -79,7 +79,7 @@ spec:
             - name: PG_DATABASE
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
+                  name: {{ include "postkeys.postgresqlSecretName" . }}
                   key: {{ .Values.postgresql.existingSecret.databaseKey }}
             {{- else }}
             - name: PG_DATABASE
@@ -91,7 +91,7 @@ spec:
             - name: PG_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
+                  name: {{ include "postkeys.postgresqlSecretName" . }}
                   key: {{ .Values.postgresql.existingSecret.usernameKey }}
             {{- else }}
             - name: PG_USER
@@ -100,13 +100,13 @@ spec:
             - name: PG_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pg-kv-backend.postgresqlSecretName" . }}
+                  name: {{ include "postkeys.postgresqlSecretName" . }}
                   key: {{ .Values.postgresql.existingSecret.passwordKey }}
             {{- if or .Values.redis.password.value .Values.redis.password.existingSecret.name }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pg-kv-backend.redisSecretName" . }}
+                  name: {{ include "postkeys.redisSecretName" . }}
                   key: {{ .Values.redis.password.existingSecret.key }}
             {{- end }}
             {{- if .Values.metrics.enabled }}

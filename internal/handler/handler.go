@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mnorrsken/pg-kv-backend/internal/metrics"
-	"github.com/mnorrsken/pg-kv-backend/internal/resp"
-	"github.com/mnorrsken/pg-kv-backend/internal/storage"
+	"github.com/mnorrsken/postkeys/internal/metrics"
+	"github.com/mnorrsken/postkeys/internal/resp"
+	"github.com/mnorrsken/postkeys/internal/storage"
 )
 
 // ClientState interface for client connection state
@@ -1162,7 +1162,7 @@ func (h *Handler) info(ctx context.Context, args []resp.Value) resp.Value {
 	dbSize, _ := h.store.DBSize(ctx)
 
 	info := fmt.Sprintf(`# Server
-redis_version:7.0.0-pg-kv-backend
+redis_version:7.0.0-postkeys
 os:%s
 arch:%s
 

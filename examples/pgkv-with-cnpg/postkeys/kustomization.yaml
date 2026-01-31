@@ -1,8 +1,8 @@
 namespace: myapp
 
 helmCharts:
-  - name: pg-kv-backend
-    releaseName: pg-kv-backend
+  - name: postkeys
+    releaseName: postkeys
     valuesFile: values.yaml
     namespace: myapp
     repo: oci://ghcr.io/mnorrsken/charts

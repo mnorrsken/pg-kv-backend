@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "pg-kv-backend.fullname" . }}
+  name: {{ include "postkeys.fullname" . }}
   labels:
-    {{- include "pg-kv-backend.labels" . | nindent 4 }}
+    {{- include "postkeys.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -12,4 +12,4 @@ spec:
       protocol: TCP
       name: redis
   selector:
-    {{- include "pg-kv-backend.selectorLabels" . | nindent 4 }}
+    {{- include "postkeys.selectorLabels" . | nindent 4 }}

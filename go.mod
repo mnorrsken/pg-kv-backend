@@ -1,4 +1,4 @@
-module github.com/mnorrsken/pg-kv-backend
+module github.com/mnorrsken/postkeys
 
 go 1.24.0
 

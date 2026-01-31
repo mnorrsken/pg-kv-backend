@@ -42,7 +42,7 @@ func Load() *Config {
 		PGPort:        getEnvInt("PG_PORT", 5432),
 		PGUser:        getEnv("PG_USER", "postgres"),
 		PGPassword:    getEnv("PG_PASSWORD", "postgres"),
-		PGDatabase:    getEnv("PG_DATABASE", "pgkv"),
+		PGDatabase:    getEnv("PG_DATABASE", "postkeys"),
 		PGSSLMode:     getEnv("PG_SSLMODE", "disable"),
 		CacheEnabled:  getEnvBool("CACHE_ENABLED", false),
 		CacheTTL:      getEnvDuration("CACHE_TTL", 250*time.Millisecond),

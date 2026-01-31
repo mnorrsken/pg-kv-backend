@@ -2,7 +2,7 @@
 
 # Build
 build:
-	go build -o bin/pg-kv-backend ./cmd/server
+	go build -o bin/postkeys ./cmd/server
 
 # Run unit tests (mock storage)
 test:

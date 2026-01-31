@@ -1,4 +1,4 @@
-# pg-kv-backend
+# postkeys
 
 > [!CAUTION]
 > **DISCLAIMER: This is purely vibecoded and will most likely have a large amount of bugs and security issues. THIS IS ONLY A TEST CONCEPT**
@@ -27,7 +27,7 @@ A Redis 7 API-compatible server that uses PostgreSQL as the backend storage.
 ## Installation
 
 ```bash
-go build -o pg-kv-backend ./cmd/server
+go build -o postkeys ./cmd/server
 ```
 
 ## Configuration
@@ -43,7 +43,7 @@ Environment variables:
 | `PG_PORT` | PostgreSQL port | `5432` |
 | `PG_USER` | PostgreSQL user | `postgres` |
 | `PG_PASSWORD` | PostgreSQL password | `postgres` |
-| `PG_DATABASE` | PostgreSQL database | `pgkv` |
+| `PG_DATABASE` | PostgreSQL database | `postkeys` |
 | `PG_SSLMODE` | PostgreSQL SSL mode | `disable` |
 | `CACHE_ENABLED` | Enable in-memory cache (opt-in) | `false` |
 | `CACHE_TTL` | Cache TTL duration | `250ms` |
@@ -64,7 +64,7 @@ export CACHE_MAX_SIZE=10000
 - Only caches string `GET` operations (hashes, lists, sets are not cached)
 - In **multi-pod deployments**, cached data may be stale for up to TTL duration
 - Writes (`SET`, `DEL`, etc.) invalidate the local cache immediately
-- Monitor cache effectiveness with `pgkv_cache_hits_total` and `pgkv_cache_misses_total` metrics
+- Monitor cache effectiveness with `postkeys_cache_hits_total` and `postkeys_cache_misses_total` metrics
 
 ## Running
 
@@ -81,7 +81,7 @@ docker-compose up -d
 3. Run the server:
 
 ```bash
-./pg-kv-backend
+./postkeys
 ```
 
 ## Usage
@@ -117,48 +117,48 @@ Prometheus metrics are exposed on a separate HTTP server (default port `:9090`).
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `pgkv_commands_total` | Counter | Total number of Redis commands processed (labeled by command) |
-| `pgkv_command_duration_seconds` | Histogram | Duration of Redis command execution in seconds (labeled by command) |
-| `pgkv_command_errors_total` | Counter | Total number of Redis command errors (labeled by command) |
-| `pgkv_active_connections` | Gauge | Number of active client connections |
-| `pgkv_connections_total` | Counter | Total number of connections accepted |
+| `postkeys_commands_total` | Counter | Total number of Redis commands processed (labeled by command) |
+| `postkeys_command_duration_seconds` | Histogram | Duration of Redis command execution in seconds (labeled by command) |
+| `postkeys_command_errors_total` | Counter | Total number of Redis command errors (labeled by command) |
+| `postkeys_active_connections` | Gauge | Number of active client connections |
+| `postkeys_connections_total` | Counter | Total number of connections accepted |
 
 ### Example Prometheus Configuration
 
 ```yaml
 scrape_configs:
-  - job_name: 'pg-kv-backend'
+  - job_name: 'postkeys'
     static_configs:
       - targets: ['localhost:9090']
 ```
 
 ## Helm Chart
 
-The Helm chart is available for deploying pg-kv-backend to Kubernetes.
+The Helm chart is available for deploying postkeys to Kubernetes.
 
 ### Installation
 
 ```bash
 # Add the repository (if hosted) or install from local chart
-helm install pg-kv-backend ./charts/pg-kv-backend
+helm install postkeys ./charts/postkeys
 
 # Install with custom values
-helm install pg-kv-backend ./charts/pg-kv-backend -f my-values.yaml
+helm install postkeys ./charts/postkeys -f my-values.yaml
 
 # Install in a specific namespace
-helm install pg-kv-backend ./charts/pg-kv-backend -n my-namespace --create-namespace
+helm install postkeys ./charts/postkeys -n my-namespace --create-namespace
 ```
 
 ### Configuration
 
-The following table lists the configurable parameters of the pg-kv-backend chart and their default values.
+The following table lists the configurable parameters of the postkeys chart and their default values.
 
 #### General
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `replicaCount` | Number of replicas | `1` |
-| `image.repository` | Image repository | `ghcr.io/mnorrsken/pg-kv-backend` |
+| `image.repository` | Image repository | `ghcr.io/mnorrsken/postkeys` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `image.tag` | Image tag (defaults to chart appVersion) | `""` |
 | `imagePullSecrets` | Image pull secrets | `[]` |
@@ -219,7 +219,7 @@ The following table lists the configurable parameters of the pg-kv-backend chart
 |-----------|-------------|---------|
 | `redis.addr` | Address to listen on inside the container | `:6379` |
 | `redis.password.create` | Enable auto-generation of a Redis password secret via a Helm hook Job | `false` |
-| `redis.password.secretName` | Name of the secret to create (if `create` is true) | `pgkv-secret` |
+| `redis.password.secretName` | Name of the secret to create (if `create` is true) | `postkeys-secret` |
 | `redis.password.value` | Redis password (ignored if `create` is true or existingSecret is set) | `""` |
 | `redis.password.secretGenerator.image.repository` | Image repository for the secret generator Job | `rancher/kubectl` |
 | `redis.password.secretGenerator.image.tag` | Image tag for the secret generator Job | `v1.35.0` |
@@ -235,7 +235,7 @@ The following table lists the configurable parameters of the pg-kv-backend chart
 |-----------|-------------|---------|
 | `postgresql.host` | PostgreSQL host | `postgresql` |
 | `postgresql.port` | PostgreSQL port | `5432` |
-| `postgresql.database` | PostgreSQL database name | `pgkv` |
+| `postgresql.database` | PostgreSQL database name | `postkeys` |
 | `postgresql.sslmode` | PostgreSQL SSL mode | `disable` |
 | `postgresql.auth.username` | PostgreSQL username | `postgres` |
 | `postgresql.auth.password` | PostgreSQL password (ignored if existingSecret is set) | `""` |

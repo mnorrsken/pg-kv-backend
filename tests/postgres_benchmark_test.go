@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mnorrsken/pg-kv-backend/internal/handler"
-	"github.com/mnorrsken/pg-kv-backend/internal/server"
-	"github.com/mnorrsken/pg-kv-backend/internal/storage"
+	"github.com/mnorrsken/postkeys/internal/handler"
+	"github.com/mnorrsken/postkeys/internal/server"
+	"github.com/mnorrsken/postkeys/internal/storage"
 	"github.com/redis/go-redis/v9"
 )
 
