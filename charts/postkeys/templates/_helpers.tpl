@@ -101,5 +101,3 @@ Return true if a Redis secret should be created from the provided value
 {{- true }}
 {{- end }}
 {{- end }}
-{{- end }}
-{{- end }}
