@@ -151,6 +151,9 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 				if cmdName == "PING" || cmdName == "QUIT" || cmdName == "COMMAND" {
 					response = s.handler.Handle(ctx, cmd)
 				} else {
+					if s.debug {
+						log.Printf("[DEBUG] NOAUTH: client %s attempted %s without authentication", conn.RemoteAddr(), cmdName)
+					}
 					response = resp.Value{Type: resp.Error, Str: "NOAUTH Authentication required."}
 				}
 			} else if cmdName == "CLIENT" {
