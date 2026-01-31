@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9] - 2026-01-31
+
+### Added
+- HELLO command support for Redis protocol negotiation (RESP2/RESP3)
+- HELLO can run without authentication (like PING, QUIT, COMMAND)
+- HELLO AUTH inline authentication support
+
 ## [0.8] - 2026-01-31
 
 ### Added
