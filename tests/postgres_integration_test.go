@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mnorrsken/postkeys/internal/handler"
 	"github.com/mnorrsken/postkeys/internal/server"
 	"github.com/mnorrsken/postkeys/internal/storage"
-	"github.com/mnorrsken/postkeysrnal/handler"
 	"github.com/redis/go-redis/v9"
 )
 
