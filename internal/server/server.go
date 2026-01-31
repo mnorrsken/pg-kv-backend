@@ -146,9 +146,17 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 				if response.Type == resp.SimpleString && response.Str == "OK" {
 					authenticated = true
 				}
+			} else if cmdName == "HELLO" {
+				// Check if HELLO contains AUTH credentials
+				hasAuth, authSuccess := s.handler.CheckHelloAuth(cmd)
+				response = s.handler.Handle(ctx, cmd)
+				// If HELLO included AUTH and it succeeded, mark as authenticated
+				if hasAuth && authSuccess && response.Type != resp.Error {
+					authenticated = true
+				}
 			} else if !authenticated {
-				// Allow only PING, QUIT, and COMMAND without auth
-				if cmdName == "PING" || cmdName == "QUIT" || cmdName == "COMMAND" {
+				// Allow only PING, QUIT, COMMAND, and HELLO without auth
+				if cmdName == "PING" || cmdName == "QUIT" || cmdName == "COMMAND" || cmdName == "HELLO" {
 					response = s.handler.Handle(ctx, cmd)
 				} else {
 					if s.debug {

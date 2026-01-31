@@ -751,6 +751,195 @@ func TestAuthenticationRequired(t *testing.T) {
 	}
 }
 
+func TestHello(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// HELLO without arguments
+	result, err := ts.client.Do(ctx, "HELLO").Result()
+	if err != nil {
+		t.Fatalf("HELLO failed: %v", err)
+	}
+
+	// Result should be a map/array with server info
+	resultSlice, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("Expected array result, got %T", result)
+	}
+
+	// Check that we got key-value pairs
+	if len(resultSlice) < 2 {
+		t.Errorf("Expected at least 2 elements in HELLO response, got %d", len(resultSlice))
+	}
+
+	// Look for "server" key
+	foundServer := false
+	for i := 0; i < len(resultSlice)-1; i += 2 {
+		key, ok := resultSlice[i].(string)
+		if ok && key == "server" {
+			value, ok := resultSlice[i+1].(string)
+			if ok && value == "postkeys" {
+				foundServer = true
+			}
+		}
+	}
+	if !foundServer {
+		t.Error("Expected 'server' = 'postkeys' in HELLO response")
+	}
+}
+
+func TestHelloWithProtocol(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// HELLO with protocol version 3
+	result, err := ts.client.Do(ctx, "HELLO", "3").Result()
+	if err != nil {
+		t.Fatalf("HELLO 3 failed: %v", err)
+	}
+
+	resultSlice, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("Expected array result, got %T", result)
+	}
+
+	// Look for "proto" key with value 3
+	foundProto := false
+	for i := 0; i < len(resultSlice)-1; i += 2 {
+		key, ok := resultSlice[i].(string)
+		if ok && key == "proto" {
+			value, ok := resultSlice[i+1].(int64)
+			if ok && value == 3 {
+				foundProto = true
+			}
+		}
+	}
+	if !foundProto {
+		t.Error("Expected 'proto' = 3 in HELLO response")
+	}
+
+	// Test HELLO with protocol version 2
+	result, err = ts.client.Do(ctx, "HELLO", "2").Result()
+	if err != nil {
+		t.Fatalf("HELLO 2 failed: %v", err)
+	}
+
+	resultSlice, ok = result.([]interface{})
+	if !ok {
+		t.Fatalf("Expected array result, got %T", result)
+	}
+
+	foundProto = false
+	for i := 0; i < len(resultSlice)-1; i += 2 {
+		key, ok := resultSlice[i].(string)
+		if ok && key == "proto" {
+			value, ok := resultSlice[i+1].(int64)
+			if ok && value == 2 {
+				foundProto = true
+			}
+		}
+	}
+	if !foundProto {
+		t.Error("Expected 'proto' = 2 in HELLO response")
+	}
+}
+
+func TestHelloUnsupportedProtocol(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// HELLO with unsupported protocol version
+	_, err := ts.client.Do(ctx, "HELLO", "4").Result()
+	if err == nil {
+		t.Error("Expected error for HELLO with unsupported protocol version")
+	}
+}
+
+func TestHelloWithoutAuth(t *testing.T) {
+	// Create server with password
+	ts := newTestServer(t, "secret123")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create client without password
+	noAuthClient := redis.NewClient(&redis.Options{
+		Addr: ts.addr,
+	})
+	defer noAuthClient.Close()
+
+	// HELLO should work without auth
+	result, err := noAuthClient.Do(ctx, "HELLO").Result()
+	if err != nil {
+		t.Fatalf("HELLO should work without auth: %v", err)
+	}
+
+	resultSlice, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("Expected array result, got %T", result)
+	}
+
+	// Should have server info
+	if len(resultSlice) < 2 {
+		t.Errorf("Expected at least 2 elements in HELLO response, got %d", len(resultSlice))
+	}
+}
+
+func TestHelloWithAuth(t *testing.T) {
+	// Create server with password
+	ts := newTestServer(t, "secret123")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create client without password
+	noAuthClient := redis.NewClient(&redis.Options{
+		Addr: ts.addr,
+	})
+	defer noAuthClient.Close()
+
+	// HELLO with AUTH should authenticate
+	result, err := noAuthClient.Do(ctx, "HELLO", "3", "AUTH", "default", "secret123").Result()
+	if err != nil {
+		t.Fatalf("HELLO with AUTH failed: %v", err)
+	}
+
+	resultSlice, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("Expected array result, got %T", result)
+	}
+
+	if len(resultSlice) < 2 {
+		t.Errorf("Expected at least 2 elements in HELLO response, got %d", len(resultSlice))
+	}
+}
+
+func TestHelloWithWrongAuth(t *testing.T) {
+	// Create server with password
+	ts := newTestServer(t, "secret123")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create client without password
+	noAuthClient := redis.NewClient(&redis.Options{
+		Addr: ts.addr,
+	})
+	defer noAuthClient.Close()
+
+	// HELLO with wrong password should fail
+	_, err := noAuthClient.Do(ctx, "HELLO", "3", "AUTH", "default", "wrongpassword").Result()
+	if err == nil {
+		t.Error("Expected error for HELLO with wrong password")
+	}
+}
+
 func TestAuthenticationSuccess(t *testing.T) {
 	password := "secret123"
 	ts := newTestServer(t, password)

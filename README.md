@@ -12,7 +12,7 @@ A Redis 7 API-compatible server that uses PostgreSQL as the backend storage.
   - **Hash commands**: HGET, HSET, HDEL, HGETALL, HMGET, HMSET, HEXISTS, HKEYS, HVALS, HLEN
   - **List commands**: LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE, LINDEX
   - **Set commands**: SADD, SREM, SMEMBERS, SISMEMBER, SCARD
-  - **Connection commands**: PING, ECHO, AUTH, QUIT
+  - **Connection commands**: PING, ECHO, AUTH, QUIT, HELLO
   - **Client commands**: CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT SETINFO, CLIENT INFO, CLIENT LIST
   - **Server commands**: INFO, DBSIZE, FLUSHDB, FLUSHALL, COMMAND
 

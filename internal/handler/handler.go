@@ -49,6 +49,46 @@ func (h *Handler) CheckAuth(providedPassword string) bool {
 	return h.password == providedPassword
 }
 
+// CheckHelloAuth checks if HELLO command contains valid AUTH credentials
+// Returns (hasAuth, authSuccess) - hasAuth is true if AUTH was specified, authSuccess is true if auth succeeded
+func (h *Handler) CheckHelloAuth(cmd resp.Value) (bool, bool) {
+	if cmd.Type != resp.Array || len(cmd.Array) < 2 {
+		return false, false
+	}
+	
+	args := cmd.Array[1:]
+	
+	// Skip protocol version if present
+	i := 0
+	if len(args) > 0 {
+		if _, err := strconv.Atoi(args[0].Bulk); err == nil {
+			i = 1
+		}
+	}
+	
+	// Look for AUTH option
+	for i < len(args) {
+		opt := strings.ToUpper(args[i].Bulk)
+		switch opt {
+		case "AUTH":
+			if i+2 >= len(args) {
+				return true, false
+			}
+			password := args[i+2].Bulk
+			return true, h.CheckAuth(password)
+		case "SETNAME":
+			if i+1 >= len(args) {
+				return false, false
+			}
+			i += 2
+		default:
+			return false, false
+		}
+	}
+	
+	return false, false
+}
+
 // Handle processes a RESP command and returns a response
 func (h *Handler) Handle(ctx context.Context, cmd resp.Value) resp.Value {
 	if cmd.Type != resp.Array || len(cmd.Array) == 0 {
@@ -81,6 +121,8 @@ func (h *Handler) executeCommand(ctx context.Context, cmdName string, args []res
 		return resp.OK()
 	case "AUTH":
 		return h.auth(args)
+	case "HELLO":
+		return h.hello(args)
 	case "COMMAND":
 		return h.command(args)
 
@@ -310,6 +352,69 @@ func (h *Handler) command(args []resp.Value) resp.Value {
 		return resp.Arr()
 	}
 	return resp.Arr()
+}
+
+func (h *Handler) hello(args []resp.Value) resp.Value {
+	// HELLO [protover [AUTH username password] [SETNAME clientname]]
+	// Returns server information in a map format
+	// We support RESP3 (protocol version 3) and RESP2 (version 2)
+	
+	protover := 3 // Default to RESP3
+	
+	if len(args) > 0 {
+		if v, err := strconv.Atoi(args[0].Bulk); err == nil {
+			if v < 2 || v > 3 {
+				return resp.Err("NOPROTO unsupported protocol version")
+			}
+			protover = v
+		}
+		
+		// Process optional arguments (AUTH and SETNAME)
+		i := 1
+		for i < len(args) {
+			opt := strings.ToUpper(args[i].Bulk)
+			switch opt {
+			case "AUTH":
+				// AUTH requires username and password
+				if i+2 >= len(args) {
+					return resp.ErrWrongArgs("hello")
+				}
+				// args[i+1] is username (ignored, we only support default user)
+				password := args[i+2].Bulk
+				if h.RequiresAuth() && !h.CheckAuth(password) {
+					return resp.Value{Type: resp.Error, Str: "WRONGPASS invalid username-password pair"}
+				}
+				i += 3
+			case "SETNAME":
+				// SETNAME requires client name - handled at connection level
+				if i+1 >= len(args) {
+					return resp.ErrWrongArgs("hello")
+				}
+				// We ignore SETNAME here as it requires client state
+				i += 2
+			default:
+				return resp.Err(fmt.Sprintf("ERR Unknown option '%s' for HELLO", args[i].Bulk))
+			}
+		}
+	}
+	
+	// Return server info as a map (array of key-value pairs for RESP2 compatibility)
+	return resp.Arr(
+		resp.Bulk("server"),
+		resp.Bulk("postkeys"),
+		resp.Bulk("version"),
+		resp.Bulk("1.0.0"),
+		resp.Bulk("proto"),
+		resp.Int(int64(protover)),
+		resp.Bulk("id"),
+		resp.Int(0),
+		resp.Bulk("mode"),
+		resp.Bulk("standalone"),
+		resp.Bulk("role"),
+		resp.Bulk("master"),
+		resp.Bulk("modules"),
+		resp.Arr(),
+	)
 }
 
 func (h *Handler) auth(args []resp.Value) resp.Value {
