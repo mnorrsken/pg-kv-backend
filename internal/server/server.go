@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/mnorrsken/postkeys/internal/handler"
+	"github.com/mnorrsken/postkeys/internal/pubsub"
 	"github.com/mnorrsken/postkeys/internal/resp"
 )
 
@@ -22,6 +23,7 @@ type Server struct {
 	quit     chan struct{}
 	wg       sync.WaitGroup
 	debug    bool
+	pubsub   *pubsub.Hub
 }
 
 // New creates a new server
@@ -41,6 +43,14 @@ func NewWithDebug(addr string, h *handler.Handler, debug bool) *Server {
 		handler: h,
 		quit:    make(chan struct{}),
 		debug:   debug,
+	}
+}
+
+// SetPubSubHub sets the pub/sub hub for the server
+func (s *Server) SetPubSubHub(hub *pubsub.Hub) {
+	s.pubsub = hub
+	if hub != nil {
+		hub.SetDebug(s.debug)
 	}
 }
 
@@ -78,6 +88,9 @@ func (s *Server) Stop() {
 	if s.listener != nil {
 		s.listener.Close()
 	}
+	if s.pubsub != nil {
+		s.pubsub.Stop()
+	}
 	s.wg.Wait()
 }
 
@@ -108,6 +121,14 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 	// Create client state for this connection
 	client := NewClientState(conn)
+	client.SetWriter(writer)
+
+	// Clean up subscriptions when connection closes
+	defer func() {
+		if s.pubsub != nil {
+			s.pubsub.RemoveSubscriber(client.GetID())
+		}
+	}()
 
 	// Track authentication state for this connection
 	authenticated := !s.handler.RequiresAuth()
@@ -137,6 +158,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 		// Check authentication before processing commands
 		var response resp.Value
+		var multiResponse []resp.Value
 		if cmd.Type == resp.Array && len(cmd.Array) > 0 {
 			cmdName := strings.ToUpper(cmd.Array[0].Bulk)
 
@@ -163,6 +185,56 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 						log.Printf("[DEBUG] NOAUTH: client %s attempted %s without authentication", conn.RemoteAddr(), cmdName)
 					}
 					response = resp.Value{Type: resp.Error, Str: "NOAUTH Authentication required."}
+				}
+			} else if cmdName == "SUBSCRIBE" {
+				// Handle SUBSCRIBE command
+				if s.pubsub == nil {
+					response = resp.Err("ERR pub/sub is not enabled")
+				} else {
+					channels := extractBulkStrings(cmd.Array[1:])
+					multiResponse = s.handler.HandleSubscribe(s.pubsub, client, channels)
+				}
+			} else if cmdName == "UNSUBSCRIBE" {
+				// Handle UNSUBSCRIBE command
+				if s.pubsub == nil {
+					response = resp.Err("ERR pub/sub is not enabled")
+				} else {
+					channels := extractBulkStrings(cmd.Array[1:])
+					multiResponse = s.handler.HandleUnsubscribe(s.pubsub, client, channels)
+				}
+			} else if cmdName == "PSUBSCRIBE" {
+				// Handle PSUBSCRIBE command
+				if s.pubsub == nil {
+					response = resp.Err("ERR pub/sub is not enabled")
+				} else {
+					patterns := extractBulkStrings(cmd.Array[1:])
+					multiResponse = s.handler.HandlePSubscribe(s.pubsub, client, patterns)
+				}
+			} else if cmdName == "PUNSUBSCRIBE" {
+				// Handle PUNSUBSCRIBE command
+				if s.pubsub == nil {
+					response = resp.Err("ERR pub/sub is not enabled")
+				} else {
+					patterns := extractBulkStrings(cmd.Array[1:])
+					multiResponse = s.handler.HandlePUnsubscribe(s.pubsub, client, patterns)
+				}
+			} else if cmdName == "PUBLISH" {
+				// Handle PUBLISH command
+				if s.pubsub == nil {
+					response = resp.Err("ERR pub/sub is not enabled")
+				} else if len(cmd.Array) < 3 {
+					response = resp.ErrWrongArgs("publish")
+				} else {
+					channel := cmd.Array[1].Bulk
+					message := cmd.Array[2].Bulk
+					response = s.handler.HandlePublish(ctx, s.pubsub, channel, message)
+				}
+			} else if client.InPubSubMode() {
+				// In pub/sub mode, only allow SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PING, QUIT
+				if cmdName == "PING" || cmdName == "QUIT" {
+					response = s.handler.Handle(ctx, cmd)
+				} else {
+					response = resp.Err("ERR only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT allowed in this context")
 				}
 			} else if cmdName == "MULTI" {
 				// Start a transaction
@@ -196,14 +268,27 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			log.Printf("[DEBUG] Error response to %s for %s: %s", conn.RemoteAddr(), cmdName, response.Str)
 		}
 
-		// Write response
-		if err := writer.WriteValue(response); err != nil {
-			if s.debug {
-				log.Printf("[DEBUG] Write error to %s: %v", conn.RemoteAddr(), err)
-			} else {
-				log.Printf("Write error: %v", err)
+		// Write response(s) - pub/sub commands may have multiple responses
+		if len(multiResponse) > 0 {
+			for _, r := range multiResponse {
+				if err := writer.WriteValue(r); err != nil {
+					if s.debug {
+						log.Printf("[DEBUG] Write error to %s: %v", conn.RemoteAddr(), err)
+					} else {
+						log.Printf("Write error: %v", err)
+					}
+					return
+				}
 			}
-			return
+		} else {
+			if err := writer.WriteValue(response); err != nil {
+				if s.debug {
+					log.Printf("[DEBUG] Write error to %s: %v", conn.RemoteAddr(), err)
+				} else {
+					log.Printf("Write error: %v", err)
+				}
+				return
+			}
 		}
 		if err := writer.Flush(); err != nil {
 			if s.debug {
@@ -214,4 +299,13 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			return
 		}
 	}
+}
+
+// extractBulkStrings extracts bulk strings from a slice of RESP values
+func extractBulkStrings(values []resp.Value) []string {
+	result := make([]string, len(values))
+	for i, v := range values {
+		result[i] = v.Bulk
+	}
+	return result
 }

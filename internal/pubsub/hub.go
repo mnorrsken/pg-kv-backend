@@ -1,0 +1,615 @@
+// Package pubsub provides Redis-compatible pub/sub backed by PostgreSQL LISTEN/NOTIFY.
+package pubsub
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mnorrsken/postkeys/internal/resp"
+)
+
+// Subscriber represents a client that can receive pub/sub messages
+type Subscriber interface {
+	// SendPubSubMessage sends a pub/sub message to the client
+	SendPubSubMessage(msgType, channel, payload string) error
+	// GetID returns the subscriber's unique identifier
+	GetID() uint64
+}
+
+// listenCmd represents a LISTEN/UNLISTEN command to be executed by the listener goroutine
+type listenCmd struct {
+	channel  string
+	listen   bool // true for LISTEN, false for UNLISTEN
+	response chan error
+}
+
+// Hub manages pub/sub subscriptions and message routing
+type Hub struct {
+	pool     *pgxpool.Pool
+	connStr  string
+
+	mu            sync.RWMutex
+	subscriptions map[string]map[uint64]Subscriber // channel -> subscriberID -> subscriber
+	subscribers   map[uint64]map[string]bool       // subscriberID -> channels
+
+	// Pattern subscriptions (for PSUBSCRIBE)
+	patternMu      sync.RWMutex
+	patterns       map[string]map[uint64]Subscriber // pattern -> subscriberID -> subscriber
+	subPatterns    map[uint64]map[string]bool       // subscriberID -> patterns
+
+	// Listener connection (dedicated for LISTEN)
+	listenerConn *pgx.Conn
+	listenerMu   sync.Mutex
+	listening    map[string]bool // channels we're currently LISTENing to
+	listenCmds   chan listenCmd  // channel for LISTEN/UNLISTEN commands
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	debug  bool
+}
+
+// NewHub creates a new pub/sub hub
+func NewHub(pool *pgxpool.Pool, connStr string) *Hub {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Hub{
+		pool:          pool,
+		connStr:       connStr,
+		subscriptions: make(map[string]map[uint64]Subscriber),
+		subscribers:   make(map[uint64]map[string]bool),
+		patterns:      make(map[string]map[uint64]Subscriber),
+		subPatterns:   make(map[uint64]map[string]bool),
+		listening:     make(map[string]bool),
+		listenCmds:    make(chan listenCmd, 100), // buffered channel for commands
+		ctx:           ctx,
+		cancel:        cancel,
+	}
+}
+
+// SetDebug enables or disables debug logging
+func (h *Hub) SetDebug(debug bool) {
+	h.debug = debug
+}
+
+// Start initializes the hub and starts the notification listener
+func (h *Hub) Start(ctx context.Context) error {
+	// Create a dedicated connection for LISTEN
+	conn, err := pgx.Connect(ctx, h.connStr)
+	if err != nil {
+		return fmt.Errorf("failed to create listener connection: %w", err)
+	}
+	h.listenerConn = conn
+
+	// Start the notification listener goroutine
+	h.wg.Add(1)
+	go h.listenLoop()
+
+	return nil
+}
+
+// Stop gracefully stops the hub
+func (h *Hub) Stop() {
+	h.cancel()
+	h.wg.Wait()
+
+	if h.listenerConn != nil {
+		h.listenerConn.Close(context.Background())
+	}
+}
+
+// Subscribe adds a subscriber to channels
+func (h *Hub) Subscribe(sub Subscriber, channels ...string) []int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	subID := sub.GetID()
+	counts := make([]int, len(channels))
+
+	// Initialize subscriber's channel set if needed
+	if _, exists := h.subscribers[subID]; !exists {
+		h.subscribers[subID] = make(map[string]bool)
+	}
+
+	for i, channel := range channels {
+		// Initialize channel's subscriber set if needed
+		if _, exists := h.subscriptions[channel]; !exists {
+			h.subscriptions[channel] = make(map[uint64]Subscriber)
+			// Start listening on this channel in PostgreSQL
+			h.startListening(channel)
+		}
+
+		// Add subscriber to channel
+		h.subscriptions[channel][subID] = sub
+		h.subscribers[subID][channel] = true
+
+		// Count total subscriptions for this subscriber
+		counts[i] = len(h.subscribers[subID])
+	}
+
+	return counts
+}
+
+// Unsubscribe removes a subscriber from channels
+// If no channels specified, unsubscribes from all
+func (h *Hub) Unsubscribe(sub Subscriber, channels ...string) []int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	subID := sub.GetID()
+	
+	// If no channels specified, unsubscribe from all
+	if len(channels) == 0 {
+		if subChannels, exists := h.subscribers[subID]; exists {
+			channels = make([]string, 0, len(subChannels))
+			for ch := range subChannels {
+				channels = append(channels, ch)
+			}
+		}
+	}
+
+	counts := make([]int, len(channels))
+
+	for i, channel := range channels {
+		// Remove from channel's subscriber set
+		if subs, exists := h.subscriptions[channel]; exists {
+			delete(subs, subID)
+			if len(subs) == 0 {
+				delete(h.subscriptions, channel)
+				// Stop listening on this channel
+				h.stopListening(channel)
+			}
+		}
+
+		// Remove from subscriber's channel set
+		if subChannels, exists := h.subscribers[subID]; exists {
+			delete(subChannels, channel)
+			counts[i] = len(subChannels)
+			if len(subChannels) == 0 {
+				delete(h.subscribers, subID)
+			}
+		}
+	}
+
+	return counts
+}
+
+// PSubscribe adds a subscriber to pattern subscriptions
+func (h *Hub) PSubscribe(sub Subscriber, patterns ...string) []int {
+	h.patternMu.Lock()
+	defer h.patternMu.Unlock()
+
+	subID := sub.GetID()
+	counts := make([]int, len(patterns))
+
+	// Initialize subscriber's pattern set if needed
+	if _, exists := h.subPatterns[subID]; !exists {
+		h.subPatterns[subID] = make(map[string]bool)
+	}
+
+	for i, pattern := range patterns {
+		// Initialize pattern's subscriber set if needed
+		if _, exists := h.patterns[pattern]; !exists {
+			h.patterns[pattern] = make(map[uint64]Subscriber)
+		}
+
+		// Add subscriber to pattern
+		h.patterns[pattern][subID] = sub
+		h.subPatterns[subID][pattern] = true
+
+		// Count total pattern subscriptions for this subscriber
+		counts[i] = len(h.subPatterns[subID])
+	}
+
+	return counts
+}
+
+// PUnsubscribe removes a subscriber from pattern subscriptions
+func (h *Hub) PUnsubscribe(sub Subscriber, patterns ...string) []int {
+	h.patternMu.Lock()
+	defer h.patternMu.Unlock()
+
+	subID := sub.GetID()
+
+	// If no patterns specified, unsubscribe from all
+	if len(patterns) == 0 {
+		if subPats, exists := h.subPatterns[subID]; exists {
+			patterns = make([]string, 0, len(subPats))
+			for pat := range subPats {
+				patterns = append(patterns, pat)
+			}
+		}
+	}
+
+	counts := make([]int, len(patterns))
+
+	for i, pattern := range patterns {
+		// Remove from pattern's subscriber set
+		if subs, exists := h.patterns[pattern]; exists {
+			delete(subs, subID)
+			if len(subs) == 0 {
+				delete(h.patterns, pattern)
+			}
+		}
+
+		// Remove from subscriber's pattern set
+		if subPats, exists := h.subPatterns[subID]; exists {
+			delete(subPats, pattern)
+			counts[i] = len(subPats)
+			if len(subPats) == 0 {
+				delete(h.subPatterns, subID)
+			}
+		}
+	}
+
+	return counts
+}
+
+// Publish publishes a message to a channel, returns the number of subscribers that received it
+func (h *Hub) Publish(ctx context.Context, channel, message string) (int64, error) {
+	// Use PostgreSQL NOTIFY to broadcast the message
+	// The message format is: channel:message
+	payload := message
+
+	_, err := h.pool.Exec(ctx, "SELECT pg_notify($1, $2)", channel, payload)
+	if err != nil {
+		return 0, fmt.Errorf("failed to publish: %w", err)
+	}
+
+	// Count subscribers (channel + pattern matches)
+	count := h.countSubscribers(channel)
+	return int64(count), nil
+}
+
+// countSubscribers counts how many subscribers would receive a message on this channel
+func (h *Hub) countSubscribers(channel string) int {
+	h.mu.RLock()
+	channelCount := len(h.subscriptions[channel])
+	h.mu.RUnlock()
+
+	h.patternMu.RLock()
+	patternCount := 0
+	for pattern, subs := range h.patterns {
+		if matchPattern(pattern, channel) {
+			patternCount += len(subs)
+		}
+	}
+	h.patternMu.RUnlock()
+
+	return channelCount + patternCount
+}
+
+// GetSubscriptionCount returns the number of channel and pattern subscriptions for a subscriber
+func (h *Hub) GetSubscriptionCount(subID uint64) (channels int, patterns int) {
+	h.mu.RLock()
+	if subs, exists := h.subscribers[subID]; exists {
+		channels = len(subs)
+	}
+	h.mu.RUnlock()
+
+	h.patternMu.RLock()
+	if pats, exists := h.subPatterns[subID]; exists {
+		patterns = len(pats)
+	}
+	h.patternMu.RUnlock()
+
+	return
+}
+
+// RemoveSubscriber removes a subscriber from all subscriptions
+func (h *Hub) RemoveSubscriber(subID uint64) {
+	// Remove from channel subscriptions
+	h.mu.Lock()
+	if channels, exists := h.subscribers[subID]; exists {
+		for channel := range channels {
+			if subs, ok := h.subscriptions[channel]; ok {
+				delete(subs, subID)
+				if len(subs) == 0 {
+					delete(h.subscriptions, channel)
+					h.stopListening(channel)
+				}
+			}
+		}
+		delete(h.subscribers, subID)
+	}
+	h.mu.Unlock()
+
+	// Remove from pattern subscriptions
+	h.patternMu.Lock()
+	if patterns, exists := h.subPatterns[subID]; exists {
+		for pattern := range patterns {
+			if subs, ok := h.patterns[pattern]; ok {
+				delete(subs, subID)
+				if len(subs) == 0 {
+					delete(h.patterns, pattern)
+				}
+			}
+		}
+		delete(h.subPatterns, subID)
+	}
+	h.patternMu.Unlock()
+}
+
+// startListening queues a LISTEN command for the channel
+func (h *Hub) startListening(channel string) {
+	h.listenerMu.Lock()
+	if h.listening[channel] {
+		h.listenerMu.Unlock()
+		return
+	}
+	// Mark as listening immediately to avoid duplicate commands
+	h.listening[channel] = true
+	h.listenerMu.Unlock()
+
+	// Send command to listener goroutine (non-blocking with buffered channel)
+	select {
+	case h.listenCmds <- listenCmd{channel: channel, listen: true}:
+		if h.debug {
+			log.Printf("[DEBUG] Queued LISTEN for channel: %s", channel)
+		}
+	default:
+		log.Printf("Warning: LISTEN command queue full for channel %s", channel)
+	}
+}
+
+// stopListening queues an UNLISTEN command for the channel
+func (h *Hub) stopListening(channel string) {
+	h.listenerMu.Lock()
+	if !h.listening[channel] {
+		h.listenerMu.Unlock()
+		return
+	}
+	delete(h.listening, channel)
+	h.listenerMu.Unlock()
+
+	// Send command to listener goroutine
+	select {
+	case h.listenCmds <- listenCmd{channel: channel, listen: false}:
+		if h.debug {
+			log.Printf("[DEBUG] Queued UNLISTEN for channel: %s", channel)
+		}
+	default:
+		log.Printf("Warning: UNLISTEN command queue full for channel %s", channel)
+	}
+}
+
+// processListenCmds processes any pending LISTEN/UNLISTEN commands
+func (h *Hub) processListenCmds() {
+	for {
+		select {
+		case cmd := <-h.listenCmds:
+			if cmd.listen {
+				_, err := h.listenerConn.Exec(h.ctx, fmt.Sprintf("LISTEN %s", pgxIdentifier(cmd.channel)))
+				if err != nil {
+					log.Printf("Failed to LISTEN on channel %s: %v", cmd.channel, err)
+					// Mark as not listening since the LISTEN failed
+					h.listenerMu.Lock()
+					delete(h.listening, cmd.channel)
+					h.listenerMu.Unlock()
+				} else if h.debug {
+					log.Printf("[DEBUG] Started LISTEN on channel: %s", cmd.channel)
+				}
+			} else {
+				_, err := h.listenerConn.Exec(h.ctx, fmt.Sprintf("UNLISTEN %s", pgxIdentifier(cmd.channel)))
+				if err != nil {
+					log.Printf("Failed to UNLISTEN on channel %s: %v", cmd.channel, err)
+				} else if h.debug {
+					log.Printf("[DEBUG] Stopped LISTEN on channel: %s", cmd.channel)
+				}
+			}
+			if cmd.response != nil {
+				cmd.response <- nil
+			}
+		default:
+			return // No more commands
+		}
+	}
+}
+
+// listenLoop continuously waits for PostgreSQL notifications
+func (h *Hub) listenLoop() {
+	defer h.wg.Done()
+
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		default:
+		}
+
+		// Process any pending LISTEN/UNLISTEN commands first
+		h.processListenCmds()
+
+		// Wait for notification with a short timeout so we can process commands
+		ctx, cancel := context.WithTimeout(h.ctx, 100*time.Millisecond)
+		notification, err := h.listenerConn.WaitForNotification(ctx)
+		cancel()
+
+		if err != nil {
+			if h.ctx.Err() != nil {
+				return // Context cancelled, clean shutdown
+			}
+			// Timeout is expected, continue to process commands
+			continue
+		}
+
+		if h.debug {
+			log.Printf("[DEBUG] Received notification on channel %s: %s", notification.Channel, notification.Payload)
+		}
+
+		// Deliver to channel subscribers
+		h.deliverToChannel(notification.Channel, notification.Payload)
+
+		// Deliver to pattern subscribers
+		h.deliverToPatterns(notification.Channel, notification.Payload)
+	}
+}
+
+// deliverToChannel delivers a message to all subscribers of a channel
+func (h *Hub) deliverToChannel(channel, payload string) {
+	h.mu.RLock()
+	subs := h.subscriptions[channel]
+	// Make a copy to avoid holding the lock during delivery
+	subscribers := make([]Subscriber, 0, len(subs))
+	for _, sub := range subs {
+		subscribers = append(subscribers, sub)
+	}
+	h.mu.RUnlock()
+
+	for _, sub := range subscribers {
+		if err := sub.SendPubSubMessage("message", channel, payload); err != nil {
+			if h.debug {
+				log.Printf("[DEBUG] Failed to deliver message to subscriber %d: %v", sub.GetID(), err)
+			}
+		}
+	}
+}
+
+// deliverToPatterns delivers a message to all pattern subscribers whose pattern matches the channel
+func (h *Hub) deliverToPatterns(channel, payload string) {
+	h.patternMu.RLock()
+	var matches []struct {
+		pattern string
+		sub     Subscriber
+	}
+	for pattern, subs := range h.patterns {
+		if matchPattern(pattern, channel) {
+			for _, sub := range subs {
+				matches = append(matches, struct {
+					pattern string
+					sub     Subscriber
+				}{pattern, sub})
+			}
+		}
+	}
+	h.patternMu.RUnlock()
+
+	for _, match := range matches {
+		// For pattern matches, send pmessage
+		if err := match.sub.SendPubSubMessage("pmessage", match.pattern+"\x00"+channel, payload); err != nil {
+			if h.debug {
+				log.Printf("[DEBUG] Failed to deliver pmessage to subscriber %d: %v", match.sub.GetID(), err)
+			}
+		}
+	}
+}
+
+// matchPattern checks if a channel matches a Redis-style glob pattern
+func matchPattern(pattern, channel string) bool {
+	return globMatch(pattern, channel)
+}
+
+// globMatch implements Redis-style glob matching
+func globMatch(pattern, str string) bool {
+	px := 0
+	sx := 0
+	pLen := len(pattern)
+	sLen := len(str)
+	starIdx := -1
+	matchIdx := 0
+
+	for sx < sLen {
+		if px < pLen && (pattern[px] == '?' || pattern[px] == str[sx]) {
+			px++
+			sx++
+		} else if px < pLen && pattern[px] == '*' {
+			starIdx = px
+			matchIdx = sx
+			px++
+		} else if starIdx != -1 {
+			px = starIdx + 1
+			matchIdx++
+			sx = matchIdx
+		} else {
+			return false
+		}
+	}
+
+	for px < pLen && pattern[px] == '*' {
+		px++
+	}
+
+	return px == pLen
+}
+
+// pgxIdentifier quotes a PostgreSQL identifier
+func pgxIdentifier(name string) string {
+	return pgx.Identifier{name}.Sanitize()
+}
+
+// BuildSubscribeResponse builds the RESP response for SUBSCRIBE
+func BuildSubscribeResponse(channel string, count int) resp.Value {
+	return resp.Value{
+		Type: resp.Array,
+		Array: []resp.Value{
+			resp.Bulk("subscribe"),
+			resp.Bulk(channel),
+			resp.Int(int64(count)),
+		},
+	}
+}
+
+// BuildUnsubscribeResponse builds the RESP response for UNSUBSCRIBE
+func BuildUnsubscribeResponse(channel string, count int) resp.Value {
+	return resp.Value{
+		Type: resp.Array,
+		Array: []resp.Value{
+			resp.Bulk("unsubscribe"),
+			resp.Bulk(channel),
+			resp.Int(int64(count)),
+		},
+	}
+}
+
+// BuildPSubscribeResponse builds the RESP response for PSUBSCRIBE
+func BuildPSubscribeResponse(pattern string, count int) resp.Value {
+	return resp.Value{
+		Type: resp.Array,
+		Array: []resp.Value{
+			resp.Bulk("psubscribe"),
+			resp.Bulk(pattern),
+			resp.Int(int64(count)),
+		},
+	}
+}
+
+// BuildPUnsubscribeResponse builds the RESP response for PUNSUBSCRIBE
+func BuildPUnsubscribeResponse(pattern string, count int) resp.Value {
+	return resp.Value{
+		Type: resp.Array,
+		Array: []resp.Value{
+			resp.Bulk("punsubscribe"),
+			resp.Bulk(pattern),
+			resp.Int(int64(count)),
+		},
+	}
+}
+
+// BuildMessageResponse builds the RESP response for a pub/sub message
+func BuildMessageResponse(channel, message string) resp.Value {
+	return resp.Value{
+		Type: resp.Array,
+		Array: []resp.Value{
+			resp.Bulk("message"),
+			resp.Bulk(channel),
+			resp.Bulk(message),
+		},
+	}
+}
+
+// BuildPMessageResponse builds the RESP response for a pattern pub/sub message
+func BuildPMessageResponse(pattern, channel, message string) resp.Value {
+	return resp.Value{
+		Type: resp.Array,
+		Array: []resp.Value{
+			resp.Bulk("pmessage"),
+			resp.Bulk(pattern),
+			resp.Bulk(channel),
+			resp.Bulk(message),
+		},
+	}
+}

@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +26,11 @@ type ClientState struct {
 	// Transaction state
 	inTransaction   bool
 	queuedCommands  []resp.Value
+
+	// Pub/sub state
+	inPubSubMode   bool
+	writer         *resp.Writer
+	writerMu       sync.Mutex
 }
 
 // NewClientState creates a new client state for a connection
@@ -140,4 +146,79 @@ func (c *ClientState) QueueLength() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.queuedCommands)
+}
+
+// SetWriter sets the RESP writer for pub/sub message delivery
+func (c *ClientState) SetWriter(w *resp.Writer) {
+	c.writerMu.Lock()
+	defer c.writerMu.Unlock()
+	c.writer = w
+}
+
+// EnterPubSubMode marks the client as in pub/sub mode
+func (c *ClientState) EnterPubSubMode() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.inPubSubMode = true
+}
+
+// ExitPubSubMode marks the client as no longer in pub/sub mode
+func (c *ClientState) ExitPubSubMode() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.inPubSubMode = false
+}
+
+// InPubSubMode returns true if the client is in pub/sub mode
+func (c *ClientState) InPubSubMode() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.inPubSubMode
+}
+
+// SendPubSubMessage sends a pub/sub message to the client
+// This implements the pubsub.Subscriber interface
+func (c *ClientState) SendPubSubMessage(msgType, channel, payload string) error {
+	c.writerMu.Lock()
+	defer c.writerMu.Unlock()
+
+	if c.writer == nil {
+		return fmt.Errorf("no writer set for client")
+	}
+
+	var response resp.Value
+
+	switch msgType {
+	case "message":
+		response = resp.Value{
+			Type: resp.Array,
+			Array: []resp.Value{
+				resp.Bulk("message"),
+				resp.Bulk(channel),
+				resp.Bulk(payload),
+			},
+		}
+	case "pmessage":
+		// channel is "pattern\x00actualChannel" for pmessage
+		parts := strings.SplitN(channel, "\x00", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid pmessage channel format")
+		}
+		response = resp.Value{
+			Type: resp.Array,
+			Array: []resp.Value{
+				resp.Bulk("pmessage"),
+				resp.Bulk(parts[0]), // pattern
+				resp.Bulk(parts[1]), // channel
+				resp.Bulk(payload),
+			},
+		}
+	default:
+		return fmt.Errorf("unknown message type: %s", msgType)
+	}
+
+	if err := c.writer.WriteValue(response); err != nil {
+		return err
+	}
+	return c.writer.Flush()
 }

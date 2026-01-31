@@ -11,6 +11,7 @@ import (
 	"github.com/mnorrsken/postkeys/internal/config"
 	"github.com/mnorrsken/postkeys/internal/handler"
 	"github.com/mnorrsken/postkeys/internal/metrics"
+	"github.com/mnorrsken/postkeys/internal/pubsub"
 	"github.com/mnorrsken/postkeys/internal/server"
 	"github.com/mnorrsken/postkeys/internal/storage"
 )
@@ -59,6 +60,15 @@ func main() {
 
 	// Create and start server
 	srv := server.NewWithDebug(cfg.RedisAddr, h, cfg.Debug)
+
+	// Initialize pub/sub hub
+	hub := pubsub.NewHub(store.Pool(), store.ConnString())
+	if err := hub.Start(ctx); err != nil {
+		log.Fatalf("Failed to start pub/sub hub: %v", err)
+	}
+	srv.SetPubSubHub(hub)
+	log.Println("Pub/sub support enabled")
+
 	if err := srv.Start(ctx); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}

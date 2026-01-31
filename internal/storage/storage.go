@@ -12,8 +12,9 @@ import (
 
 // Store provides PostgreSQL-backed storage for Redis operations
 type Store struct {
-	pool *pgxpool.Pool
-	ops  queryOps
+	pool    *pgxpool.Pool
+	connStr string
+	ops     queryOps
 }
 
 // Config holds PostgreSQL connection configuration
@@ -38,7 +39,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("failed to create pool: %w", err)
 	}
 
-	store := &Store{pool: pool}
+	store := &Store{pool: pool, connStr: connStr}
 	if err := store.initSchema(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
@@ -53,6 +54,16 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 // Close closes the database connection pool
 func (s *Store) Close() {
 	s.pool.Close()
+}
+
+// Pool returns the underlying connection pool
+func (s *Store) Pool() *pgxpool.Pool {
+	return s.pool
+}
+
+// ConnString returns the connection string
+func (s *Store) ConnString() string {
+	return s.connStr
 }
 
 func (s *Store) initSchema(ctx context.Context) error {
