@@ -1,8 +1,5 @@
 # postkeys
 
-> [!CAUTION]
-> **DISCLAIMER: This is purely vibecoded and will most likely have a large amount of bugs and security issues. THIS IS ONLY A TEST CONCEPT**
-
 A Redis 7 API-compatible server that uses PostgreSQL as the backend storage.
 
 ## Features
