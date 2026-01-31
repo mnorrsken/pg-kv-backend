@@ -75,8 +75,22 @@ redis:
   
   # Redis password configuration
   password:
-    # Password value (ignored if existingSecret is set)
+    # Enable creation of a Redis password secret using a Helm hook Job
+    # If enabled and no existingSecret is provided, a random password will be generated
+    # The password.value field is ignored when create is true
+    create: false
+    # Name of the secret to create (only used if create is true and no existingSecret)
+    secretName: "pgkv-secret"
+    # Password value (only used if create is false and no existingSecret is set)
+    # When create is true, this value is ignored and a random password is generated
     value: ""
+    # Secret generator Job configuration (only used when create is true)
+    secretGenerator:
+      # Image configuration for the secret generator Job
+      image:
+        repository: rancher/kubectl
+        tag: "v1.35.0"
+        pullPolicy: IfNotPresent
     # Use an existing secret for the Redis password
     existingSecret:
       # Name of the existing secret

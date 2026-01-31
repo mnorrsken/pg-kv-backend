@@ -218,9 +218,16 @@ The following table lists the configurable parameters of the pg-kv-backend chart
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `redis.addr` | Address to listen on inside the container | `:6379` |
-| `redis.password.value` | Redis password (ignored if existingSecret is set) | `""` |
+| `redis.password.create` | Enable auto-generation of a Redis password secret via a Helm hook Job | `false` |
+| `redis.password.secretName` | Name of the secret to create (if `create` is true) | `pgkv-secret` |
+| `redis.password.value` | Redis password (ignored if `create` is true or existingSecret is set) | `""` |
+| `redis.password.secretGenerator.image.repository` | Image repository for the secret generator Job | `rancher/kubectl` |
+| `redis.password.secretGenerator.image.tag` | Image tag for the secret generator Job | `v1.35.0` |
+| `redis.password.secretGenerator.image.pullPolicy` | Image pull policy for the secret generator Job | `IfNotPresent` |
 | `redis.password.existingSecret.name` | Name of existing secret for Redis password | `""` |
 | `redis.password.existingSecret.key` | Key in secret containing the password | `redis-password` |
+
+> **Note:** When `redis.password.create` is `true`, a random 32-character password is automatically generated using a Kubernetes Job that runs as a Helm pre-install/pre-upgrade hook. The `password.value` field is ignored in this case. If the secret already exists, it will not be overwritten. The Job inherits `nodeSelector` and `tolerations` from the main deployment configuration.
 
 #### PostgreSQL Configuration
 

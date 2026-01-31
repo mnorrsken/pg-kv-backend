@@ -76,6 +76,8 @@ Get the Redis secret name
 {{- define "pg-kv-backend.redisSecretName" -}}
 {{- if .Values.redis.password.existingSecret.name }}
 {{- .Values.redis.password.existingSecret.name }}
+{{- else if .Values.redis.password.secretName }}
+{{- .Values.redis.password.secretName }}
 {{- else }}
 {{- include "pg-kv-backend.fullname" . }}-redis
 {{- end }}
@@ -91,10 +93,13 @@ Return true if a PostgreSQL secret should be created
 {{- end }}
 
 {{/*
-Return true if a Redis secret should be created
+Return true if a Redis secret should be created from the provided value
+(not via the Job-based auto-generation)
 */}}
 {{- define "pg-kv-backend.createRedisSecret" -}}
-{{- if and (not .Values.redis.password.existingSecret.name) .Values.redis.password.value }}
+{{- if and (not .Values.redis.password.create) (not .Values.redis.password.existingSecret.name) .Values.redis.password.value }}
 {{- true }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
