@@ -174,6 +174,15 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			response = s.handler.Handle(ctx, cmd)
 		}
 
+		// Log error responses when debug is enabled
+		if s.debug && response.Type == resp.Error {
+			cmdName := ""
+			if cmd.Type == resp.Array && len(cmd.Array) > 0 {
+				cmdName = strings.ToUpper(cmd.Array[0].Bulk)
+			}
+			log.Printf("[DEBUG] Error response to %s for %s: %s", conn.RemoteAddr(), cmdName, response.Str)
+		}
+
 		// Write response
 		if err := writer.WriteValue(response); err != nil {
 			if s.debug {
