@@ -191,6 +191,26 @@ func (t *MockTransaction) SCard(ctx context.Context, key string) (int64, error) 
 	return t.parent.SCard(ctx, key)
 }
 
+func (t *MockTransaction) ZAdd(ctx context.Context, key string, members []ZMember) (int64, error) {
+	return t.parent.ZAdd(ctx, key, members)
+}
+
+func (t *MockTransaction) ZRange(ctx context.Context, key string, start, stop int64, withScores bool) ([]ZMember, error) {
+	return t.parent.ZRange(ctx, key, start, stop, withScores)
+}
+
+func (t *MockTransaction) ZScore(ctx context.Context, key, member string) (float64, bool, error) {
+	return t.parent.ZScore(ctx, key, member)
+}
+
+func (t *MockTransaction) ZRem(ctx context.Context, key string, members []string) (int64, error) {
+	return t.parent.ZRem(ctx, key, members)
+}
+
+func (t *MockTransaction) ZCard(ctx context.Context, key string) (int64, error) {
+	return t.parent.ZCard(ctx, key)
+}
+
 func (t *MockTransaction) DBSize(ctx context.Context) (int64, error) {
 	return t.parent.DBSize(ctx)
 }

@@ -13,8 +13,15 @@ const (
 	TypeHash   KeyType = "hash"
 	TypeList   KeyType = "list"
 	TypeSet    KeyType = "set"
+	TypeZSet   KeyType = "zset"
 	TypeNone   KeyType = "none"
 )
+
+// ZMember represents a sorted set member with its score
+type ZMember struct {
+	Member string
+	Score  float64
+}
 
 // Operations defines the common storage operations available in both regular and transaction contexts
 type Operations interface {
@@ -64,6 +71,13 @@ type Operations interface {
 	SMembers(ctx context.Context, key string) ([]string, error)
 	SIsMember(ctx context.Context, key, member string) (bool, error)
 	SCard(ctx context.Context, key string) (int64, error)
+
+	// Sorted set commands
+	ZAdd(ctx context.Context, key string, members []ZMember) (int64, error)
+	ZRange(ctx context.Context, key string, start, stop int64, withScores bool) ([]ZMember, error)
+	ZScore(ctx context.Context, key, member string) (float64, bool, error)
+	ZRem(ctx context.Context, key string, members []string) (int64, error)
+	ZCard(ctx context.Context, key string) (int64, error)
 
 	// Server commands
 	DBSize(ctx context.Context) (int64, error)

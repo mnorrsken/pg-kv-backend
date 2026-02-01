@@ -108,6 +108,18 @@ func (s *Store) initSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_kv_sets_expires ON kv_sets(expires_at) WHERE expires_at IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS idx_kv_sets_key ON kv_sets(key);
 
+		-- Sorted set type storage
+		CREATE TABLE IF NOT EXISTS kv_zsets (
+			key TEXT NOT NULL,
+			member BYTEA NOT NULL,
+			score DOUBLE PRECISION NOT NULL,
+			expires_at TIMESTAMPTZ,
+			PRIMARY KEY (key, member)
+		);
+		CREATE INDEX IF NOT EXISTS idx_kv_zsets_expires ON kv_zsets(expires_at) WHERE expires_at IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_kv_zsets_key ON kv_zsets(key);
+		CREATE INDEX IF NOT EXISTS idx_kv_zsets_score ON kv_zsets(key, score);
+
 		-- Key metadata for tracking types and TTL
 		CREATE TABLE IF NOT EXISTS kv_meta (
 			key TEXT PRIMARY KEY,
@@ -391,6 +403,34 @@ func (s *Store) SCard(ctx context.Context, key string) (int64, error) {
 	return s.ops.sCard(ctx, s.pool, key)
 }
 
+// ============== Sorted Set Commands ==============
+
+func (s *Store) ZAdd(ctx context.Context, key string, members []ZMember) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.zAdd(ctx, tx, key, members)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) ZRange(ctx context.Context, key string, start, stop int64, withScores bool) ([]ZMember, error) {
+	return s.ops.zRange(ctx, s.pool, key, start, stop, withScores)
+}
+
+func (s *Store) ZScore(ctx context.Context, key, member string) (float64, bool, error) {
+	return s.ops.zScore(ctx, s.pool, key, member)
+}
+
+func (s *Store) ZRem(ctx context.Context, key string, members []string) (int64, error) {
+	return s.ops.zRem(ctx, s.pool, key, members)
+}
+
+func (s *Store) ZCard(ctx context.Context, key string) (int64, error) {
+	return s.ops.zCard(ctx, s.pool, key)
+}
+
 // ============== Server Commands ==============
 
 func (s *Store) DBSize(ctx context.Context) (int64, error) {
@@ -403,6 +443,7 @@ func (s *Store) FlushDB(ctx context.Context) error {
 		"TRUNCATE kv_hashes",
 		"TRUNCATE kv_lists",
 		"TRUNCATE kv_sets",
+		"TRUNCATE kv_zsets",
 		"TRUNCATE kv_meta",
 	}
 	for _, q := range queries {

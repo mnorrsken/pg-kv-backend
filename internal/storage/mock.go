@@ -18,6 +18,7 @@ type MockStore struct {
 	hashes    map[string]map[string]string
 	lists     map[string][]string
 	sets      map[string]map[string]struct{}
+	zsets     map[string]map[string]float64
 	keyTypes  map[string]KeyType
 	expiresAt map[string]time.Time
 }
@@ -29,6 +30,7 @@ func NewMockStore() *MockStore {
 		hashes:    make(map[string]map[string]string),
 		lists:     make(map[string][]string),
 		sets:      make(map[string]map[string]struct{}),
+		zsets:     make(map[string]map[string]float64),
 		keyTypes:  make(map[string]KeyType),
 		expiresAt: make(map[string]time.Time),
 	}
@@ -52,6 +54,7 @@ func (m *MockStore) deleteKey(key string) {
 	delete(m.hashes, key)
 	delete(m.lists, key)
 	delete(m.sets, key)
+	delete(m.zsets, key)
 	delete(m.keyTypes, key)
 	delete(m.expiresAt, key)
 }
@@ -902,6 +905,148 @@ func (m *MockStore) SCard(ctx context.Context, key string) (int64, error) {
 	return 0, nil
 }
 
+// ============== Sorted Set Commands ==============
+
+func (m *MockStore) ZAdd(ctx context.Context, key string, members []ZMember) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		// Key expired, treat as non-existent
+	} else if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	if m.zsets[key] == nil {
+		m.zsets[key] = make(map[string]float64)
+	}
+
+	var added int64
+	for _, zm := range members {
+		if _, exists := m.zsets[key][zm.Member]; !exists {
+			added++
+		}
+		m.zsets[key][zm.Member] = zm.Score
+	}
+
+	m.keyTypes[key] = TypeZSet
+	return added, nil
+}
+
+func (m *MockStore) ZRange(ctx context.Context, key string, start, stop int64, withScores bool) ([]ZMember, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return []ZMember{}, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok || len(zset) == 0 {
+		return []ZMember{}, nil
+	}
+
+	// Convert map to sorted slice
+	members := make([]ZMember, 0, len(zset))
+	for member, score := range zset {
+		members = append(members, ZMember{Member: member, Score: score})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].Score != members[j].Score {
+			return members[i].Score < members[j].Score
+		}
+		return members[i].Member < members[j].Member
+	})
+
+	count := int64(len(members))
+	if start < 0 {
+		start = count + start
+	}
+	if stop < 0 {
+		stop = count + stop
+	}
+	if start < 0 {
+		start = 0
+	}
+	if stop >= count {
+		stop = count - 1
+	}
+	if start > stop {
+		return []ZMember{}, nil
+	}
+
+	return members[start : stop+1], nil
+}
+
+func (m *MockStore) ZScore(ctx context.Context, key, member string) (float64, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return 0, false, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	if zset, ok := m.zsets[key]; ok {
+		if score, exists := zset[member]; exists {
+			return score, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+func (m *MockStore) ZRem(ctx context.Context, key string, members []string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok {
+		return 0, nil
+	}
+
+	var removed int64
+	for _, member := range members {
+		if _, exists := zset[member]; exists {
+			delete(zset, member)
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+func (m *MockStore) ZCard(ctx context.Context, key string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	if zset, ok := m.zsets[key]; ok {
+		return int64(len(zset)), nil
+	}
+	return 0, nil
+}
+
 // ============== Server Commands ==============
 
 func (m *MockStore) DBSize(ctx context.Context) (int64, error) {
@@ -925,6 +1070,7 @@ func (m *MockStore) FlushDB(ctx context.Context) error {
 	m.hashes = make(map[string]map[string]string)
 	m.lists = make(map[string][]string)
 	m.sets = make(map[string]map[string]struct{})
+	m.zsets = make(map[string]map[string]float64)
 	m.keyTypes = make(map[string]KeyType)
 	m.expiresAt = make(map[string]time.Time)
 

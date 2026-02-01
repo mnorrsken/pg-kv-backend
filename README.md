@@ -4,17 +4,41 @@ A Redis 7 API-compatible server that uses PostgreSQL as the backend storage.
 
 ## Features
 
-- Redis protocol (RESP3) compatible
+- Redis protocol compatible (RESP2 and RESP3)
 - PostgreSQL persistent storage
+- Full pub/sub support with RESP3 Push messages
+- Transaction support (MULTI/EXEC/DISCARD)
 - Supports common Redis commands:
   - **String commands**: GET, SET, SETNX, SETEX, MGET, MSET, INCR, DECR, INCRBY, DECRBY, APPEND
   - **Key commands**: DEL, EXISTS, EXPIRE, TTL, PTTL, PERSIST, KEYS, TYPE, RENAME
-  - **Hash commands**: HGET, HSET, HDEL, HGETALL, HMGET, HMSET, HEXISTS, HKEYS, HVALS, HLEN
+  - **Hash commands**: HGET, HSET, HDEL, HGETALL, HMGET, HMSET, HEXISTS, HKEYS, HVALS, HLEN, HSCAN
   - **List commands**: LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE, LINDEX
   - **Set commands**: SADD, SREM, SMEMBERS, SISMEMBER, SCARD
+  - **Sorted set commands**: ZADD, ZRANGE, ZSCORE, ZREM, ZCARD
+  - **Pub/Sub commands**: SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH
+  - **Transaction commands**: MULTI, EXEC, DISCARD, WATCH, UNWATCH
   - **Connection commands**: PING, ECHO, AUTH, QUIT, HELLO
   - **Client commands**: CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT SETINFO, CLIENT INFO, CLIENT LIST
   - **Server commands**: INFO, DBSIZE, FLUSHDB, FLUSHALL, COMMAND
+
+## Protocol Support
+
+postkeys supports both RESP2 and RESP3 protocols:
+
+- **RESP2**: Default protocol for backwards compatibility
+- **RESP3**: Modern protocol with native types (Maps, Sets, Booleans, etc.)
+
+Clients can negotiate the protocol version using the `HELLO` command:
+
+```bash
+# Upgrade to RESP3
+HELLO 3
+
+# RESP3 benefits:
+# - HGETALL returns native Map type instead of flat array
+# - Pub/sub messages use Push type (out-of-band), allowing commands while subscribed
+# - Better type information for clients
+```
 
 ## Requirements
 

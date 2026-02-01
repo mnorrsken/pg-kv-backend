@@ -192,6 +192,28 @@ func (t *TxStore) SCard(ctx context.Context, key string) (int64, error) {
 	return t.ops.sCard(ctx, t.tx, key)
 }
 
+// ============== Sorted Set Commands ==============
+
+func (t *TxStore) ZAdd(ctx context.Context, key string, members []ZMember) (int64, error) {
+	return t.ops.zAdd(ctx, t.tx, key, members)
+}
+
+func (t *TxStore) ZRange(ctx context.Context, key string, start, stop int64, withScores bool) ([]ZMember, error) {
+	return t.ops.zRange(ctx, t.tx, key, start, stop, withScores)
+}
+
+func (t *TxStore) ZScore(ctx context.Context, key, member string) (float64, bool, error) {
+	return t.ops.zScore(ctx, t.tx, key, member)
+}
+
+func (t *TxStore) ZRem(ctx context.Context, key string, members []string) (int64, error) {
+	return t.ops.zRem(ctx, t.tx, key, members)
+}
+
+func (t *TxStore) ZCard(ctx context.Context, key string) (int64, error) {
+	return t.ops.zCard(ctx, t.tx, key)
+}
+
 // ============== Server Commands ==============
 
 func (t *TxStore) DBSize(ctx context.Context) (int64, error) {

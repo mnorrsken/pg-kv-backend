@@ -56,6 +56,7 @@ func (queryOps) deleteKeyFromAllTables(ctx context.Context, q Querier, key strin
 		"DELETE FROM kv_hashes WHERE key = $1",
 		"DELETE FROM kv_lists WHERE key = $1",
 		"DELETE FROM kv_sets WHERE key = $1",
+		"DELETE FROM kv_zsets WHERE key = $1",
 		"DELETE FROM kv_meta WHERE key = $1",
 	}
 	for _, query := range queries {
@@ -917,6 +918,138 @@ func (o queryOps) sCard(ctx context.Context, q Querier, key string) (int64, erro
 	var count int64
 	err := q.QueryRow(ctx,
 		"SELECT COUNT(*) FROM kv_sets WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&count)
+	return count, err
+}
+
+// ============== Sorted Set Commands ==============
+
+func (o queryOps) zAdd(ctx context.Context, q Querier, key string, members []ZMember) (int64, error) {
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return 0, err
+	}
+	if keyType != TypeNone && keyType != TypeZSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	var added int64
+	for _, m := range members {
+		result, err := q.Exec(ctx,
+			`INSERT INTO kv_zsets (key, member, score) VALUES ($1, $2, $3)
+			 ON CONFLICT (key, member) DO UPDATE SET score = $3`,
+			key, []byte(m.Member), m.Score,
+		)
+		if err != nil {
+			return 0, err
+		}
+		added += result.RowsAffected()
+	}
+
+	if err := o.setMeta(ctx, q, key, TypeZSet, nil); err != nil {
+		return 0, err
+	}
+
+	return added, nil
+}
+
+func (o queryOps) zRange(ctx context.Context, q Querier, key string, start, stop int64, withScores bool) ([]ZMember, error) {
+	// Get total count first to handle negative indices
+	var count int64
+	err := q.QueryRow(ctx,
+		"SELECT COUNT(*) FROM kv_zsets WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&count)
+	if err != nil {
+		return nil, err
+	}
+
+	if count == 0 {
+		return []ZMember{}, nil
+	}
+
+	// Convert negative indices
+	if start < 0 {
+		start = count + start
+	}
+	if stop < 0 {
+		stop = count + stop
+	}
+
+	// Clamp to valid range
+	if start < 0 {
+		start = 0
+	}
+	if stop >= count {
+		stop = count - 1
+	}
+	if start > stop {
+		return []ZMember{}, nil
+	}
+
+	limit := stop - start + 1
+	rows, err := q.Query(ctx,
+		`SELECT member, score FROM kv_zsets 
+		 WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())
+		 ORDER BY score ASC, member ASC
+		 LIMIT $2 OFFSET $3`,
+		key, limit, start,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []ZMember
+	for rows.Next() {
+		var member []byte
+		var score float64
+		if err := rows.Scan(&member, &score); err != nil {
+			return nil, err
+		}
+		members = append(members, ZMember{Member: string(member), Score: score})
+	}
+	return members, nil
+}
+
+func (o queryOps) zScore(ctx context.Context, q Querier, key, member string) (float64, bool, error) {
+	var score float64
+	err := q.QueryRow(ctx,
+		`SELECT score FROM kv_zsets 
+		 WHERE key = $1 AND member = $2 AND (expires_at IS NULL OR expires_at > NOW())`,
+		key, []byte(member),
+	).Scan(&score)
+
+	if err == pgx.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return score, true, nil
+}
+
+func (o queryOps) zRem(ctx context.Context, q Querier, key string, members []string) (int64, error) {
+	memberBytes := make([][]byte, len(members))
+	for i, m := range members {
+		memberBytes[i] = []byte(m)
+	}
+
+	result, err := q.Exec(ctx,
+		"DELETE FROM kv_zsets WHERE key = $1 AND member = ANY($2)",
+		key, memberBytes,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+func (o queryOps) zCard(ctx context.Context, q Querier, key string) (int64, error) {
+	var count int64
+	err := q.QueryRow(ctx,
+		"SELECT COUNT(*) FROM kv_zsets WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
 		key,
 	).Scan(&count)
 	return count, err

@@ -258,6 +258,28 @@ func (s *CachedStore) SCard(ctx context.Context, key string) (int64, error) {
 	return s.backend.SCard(ctx, key)
 }
 
+// ============== Sorted Set Commands ==============
+
+func (s *CachedStore) ZAdd(ctx context.Context, key string, members []storage.ZMember) (int64, error) {
+	return s.backend.ZAdd(ctx, key, members)
+}
+
+func (s *CachedStore) ZRange(ctx context.Context, key string, start, stop int64, withScores bool) ([]storage.ZMember, error) {
+	return s.backend.ZRange(ctx, key, start, stop, withScores)
+}
+
+func (s *CachedStore) ZScore(ctx context.Context, key, member string) (float64, bool, error) {
+	return s.backend.ZScore(ctx, key, member)
+}
+
+func (s *CachedStore) ZRem(ctx context.Context, key string, members []string) (int64, error) {
+	return s.backend.ZRem(ctx, key, members)
+}
+
+func (s *CachedStore) ZCard(ctx context.Context, key string) (int64, error) {
+	return s.backend.ZCard(ctx, key)
+}
+
 // ============== Server Commands ==============
 
 func (s *CachedStore) DBSize(ctx context.Context) (int64, error) {

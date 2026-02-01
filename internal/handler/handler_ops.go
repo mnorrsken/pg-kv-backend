@@ -941,6 +941,143 @@ func (h *Handler) scardOp(ctx context.Context, ops storage.Operations, args []re
 	return resp.Int(count)
 }
 
+// ============== Sorted Set Commands ==============
+
+func (h *Handler) zaddOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 3 {
+		return resp.ErrWrongArgs("zadd")
+	}
+
+	key := args[0].Bulk
+
+	// Parse optional flags (NX, XX, GT, LT, CH)
+	// For now, we'll implement basic ZADD without flags
+	i := 1
+
+	// Check if we have score-member pairs
+	if (len(args)-i)%2 != 0 {
+		return resp.ErrWrongArgs("zadd")
+	}
+
+	var members []storage.ZMember
+	for i < len(args) {
+		score, err := strconv.ParseFloat(args[i].Bulk, 64)
+		if err != nil {
+			return resp.Err("value is not a valid float")
+		}
+		member := args[i+1].Bulk
+		members = append(members, storage.ZMember{Member: member, Score: score})
+		i += 2
+	}
+
+	added, err := ops.ZAdd(ctx, key, members)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(added)
+}
+
+func (h *Handler) zrangeOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 3 {
+		return resp.ErrWrongArgs("zrange")
+	}
+
+	key := args[0].Bulk
+	start, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("value is not an integer or out of range")
+	}
+	stop, err := strconv.ParseInt(args[2].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("value is not an integer or out of range")
+	}
+
+	withScores := false
+	if len(args) > 3 && strings.ToUpper(args[3].Bulk) == "WITHSCORES" {
+		withScores = true
+	}
+
+	members, err := ops.ZRange(ctx, key, start, stop, withScores)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	if withScores {
+		result := make([]resp.Value, 0, len(members)*2)
+		for _, m := range members {
+			result = append(result, resp.Bulk(m.Member))
+			result = append(result, resp.Bulk(strconv.FormatFloat(m.Score, 'f', -1, 64)))
+		}
+		return resp.Arr(result...)
+	}
+
+	result := make([]resp.Value, len(members))
+	for i, m := range members {
+		result[i] = resp.Bulk(m.Member)
+	}
+	return resp.Arr(result...)
+}
+
+func (h *Handler) zscoreOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 2 {
+		return resp.ErrWrongArgs("zscore")
+	}
+
+	score, found, err := ops.ZScore(ctx, args[0].Bulk, args[1].Bulk)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	if !found {
+		return resp.NullBulk()
+	}
+	return resp.Bulk(strconv.FormatFloat(score, 'f', -1, 64))
+}
+
+func (h *Handler) zremOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("zrem")
+	}
+
+	key := args[0].Bulk
+	members := make([]string, len(args)-1)
+	for i := 1; i < len(args); i++ {
+		members[i-1] = args[i].Bulk
+	}
+
+	removed, err := ops.ZRem(ctx, key, members)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(removed)
+}
+
+func (h *Handler) zcardOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 1 {
+		return resp.ErrWrongArgs("zcard")
+	}
+
+	count, err := ops.ZCard(ctx, args[0].Bulk)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(count)
+}
+
 // ============== Server Commands ==============
 
 func (h *Handler) infoOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
@@ -1078,6 +1215,18 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.sismemberOp(ctx, ops, args)
 	case "SCARD":
 		return h.scardOp(ctx, ops, args)
+
+	// Sorted set commands
+	case "ZADD":
+		return h.zaddOp(ctx, ops, args)
+	case "ZRANGE":
+		return h.zrangeOp(ctx, ops, args)
+	case "ZSCORE":
+		return h.zscoreOp(ctx, ops, args)
+	case "ZREM":
+		return h.zremOp(ctx, ops, args)
+	case "ZCARD":
+		return h.zcardOp(ctx, ops, args)
 
 	// Server commands
 	case "INFO":
