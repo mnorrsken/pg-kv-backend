@@ -49,22 +49,34 @@ func (h *Handler) HandleSubscribe(hub *pubsub.Hub, client PubSubClientState, cha
 func (h *Handler) HandleUnsubscribe(hub *pubsub.Hub, client PubSubClientState, channels []string) []resp.Value {
 	start := time.Now()
 
+	// Get the list of channels to unsubscribe from
+	// If no channels specified, get current subscriptions
+	unsubChannels := channels
+	if len(unsubChannels) == 0 {
+		// Get the channels the client is currently subscribed to
+		unsubChannels = hub.GetSubscribedChannels(client.GetID())
+	}
+
 	// Unsubscribe from channels
 	counts := hub.Unsubscribe(client, channels...)
 
-	// If no channels specified, we unsubscribed from all
-	// The channels variable now contains all channels we unsubscribed from
-	if len(channels) == 0 {
-		// No channels were subscribed, return single response
+	// If no channels to unsubscribe from, return single response
+	if len(unsubChannels) == 0 {
 		responses := []resp.Value{pubsub.BuildUnsubscribeResponse("", 0)}
 		client.ExitPubSubMode()
+		duration := time.Since(start)
+		metrics.RecordCommand("UNSUBSCRIBE", duration, false)
 		return responses
 	}
 
 	// Build responses for each channel
-	responses := make([]resp.Value, len(channels))
-	for i, channel := range channels {
-		responses[i] = pubsub.BuildUnsubscribeResponse(channel, counts[i])
+	responses := make([]resp.Value, len(unsubChannels))
+	for i, channel := range unsubChannels {
+		count := 0
+		if i < len(counts) {
+			count = counts[i]
+		}
+		responses[i] = pubsub.BuildUnsubscribeResponse(channel, count)
 	}
 
 	// Check if we should exit pub/sub mode

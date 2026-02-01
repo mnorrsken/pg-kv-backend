@@ -300,6 +300,21 @@ func (h *Hub) GetSubscriptionCount(subID uint64) (channels int, patterns int) {
 	return
 }
 
+// GetSubscribedChannels returns the list of channels a subscriber is subscribed to
+func (h *Hub) GetSubscribedChannels(subID uint64) []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if subs, exists := h.subscribers[subID]; exists {
+		channels := make([]string, 0, len(subs))
+		for ch := range subs {
+			channels = append(channels, ch)
+		}
+		return channels
+	}
+	return nil
+}
+
 // RemoveSubscriber removes a subscriber from all subscriptions
 func (h *Hub) RemoveSubscriber(subID uint64) {
 	// Remove from channel subscriptions

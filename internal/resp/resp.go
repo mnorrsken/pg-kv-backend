@@ -32,12 +32,13 @@ const (
 
 // Value represents a RESP value
 type Value struct {
-	Type  Type
-	Str   string
-	Num   int64
-	Bulk  string
-	Array []Value
-	Null  bool
+	Type    Type
+	Str     string
+	Num     int64
+	Bulk    string
+	Array   []Value
+	MapData map[string]string // For RESP3 Map type
+	Null    bool
 }
 
 // Reader reads RESP values from an io.Reader
@@ -222,6 +223,8 @@ func (w *Writer) WriteValue(v Value) error {
 		} else {
 			err = w.WriteArray(v.Array)
 		}
+	case Map:
+		err = w.WriteMap(v.MapData)
 	default:
 		err = fmt.Errorf("unknown RESP type: %c", v.Type)
 	}
@@ -290,6 +293,22 @@ func (w *Writer) WriteStringArray(arr []string) error {
 	return nil
 }
 
+// WriteMap writes a RESP3 Map (hash) value
+func (w *Writer) WriteMap(m map[string]string) error {
+	if _, err := w.writer.WriteString("%" + strconv.Itoa(len(m)) + "\r\n"); err != nil {
+		return err
+	}
+	for key, value := range m {
+		if err := w.WriteBulkString(key); err != nil {
+			return err
+		}
+		if err := w.WriteBulkString(value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // OK returns an OK simple string value
 func OK() Value {
 	return Value{Type: SimpleString, Str: "OK"}
@@ -333,4 +352,9 @@ func Bulk(s string) Value {
 // Arr returns an array value
 func Arr(values ...Value) Value {
 	return Value{Type: Array, Array: values}
+}
+
+// MapVal returns a RESP3 Map value
+func MapVal(m map[string]string) Value {
+	return Value{Type: Map, MapData: m}
 }

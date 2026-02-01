@@ -796,7 +796,7 @@ func TestHelloWithProtocol(t *testing.T) {
 
 	ctx := context.Background()
 
-	// HELLO with protocol version 3
+	// HELLO with protocol version 3 - server now supports RESP3
 	result, err := ts.client.Do(ctx, "HELLO", "3").Result()
 	if err != nil {
 		t.Fatalf("HELLO 3 failed: %v", err)
@@ -807,7 +807,7 @@ func TestHelloWithProtocol(t *testing.T) {
 		t.Fatalf("Expected array result, got %T", result)
 	}
 
-	// Look for "proto" key with value 3
+	// Look for "proto" key with value 3 (server now supports RESP3)
 	foundProto := false
 	for i := 0; i < len(resultSlice)-1; i += 2 {
 		key, ok := resultSlice[i].(string)

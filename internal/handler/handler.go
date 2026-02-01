@@ -13,6 +13,29 @@ import (
 	"github.com/mnorrsken/postkeys/internal/storage"
 )
 
+// Context key for protocol version
+type contextKey string
+
+const protocolVersionKey contextKey = "protocolVersion"
+
+// WithProtocolVersion adds the protocol version to the context
+func WithProtocolVersion(ctx context.Context, version int) context.Context {
+	return context.WithValue(ctx, protocolVersionKey, version)
+}
+
+// GetProtocolVersion gets the protocol version from context (defaults to 2)
+func GetProtocolVersion(ctx context.Context) int {
+	if v, ok := ctx.Value(protocolVersionKey).(int); ok {
+		return v
+	}
+	return 2
+}
+
+// UseRESP3 returns true if the context indicates RESP3 protocol
+func UseRESP3(ctx context.Context) bool {
+	return GetProtocolVersion(ctx) >= 3
+}
+
 // ClientState interface for client connection state
 type ClientState interface {
 	GetID() uint64
@@ -57,6 +80,22 @@ func (h *Handler) RequiresAuth() bool {
 // CheckAuth verifies the provided password
 func (h *Handler) CheckAuth(providedPassword string) bool {
 	return h.password == providedPassword
+}
+
+// GetHelloProtocolVersion extracts the protocol version from a HELLO command
+// Returns the requested protocol version (2 or 3), defaults to 2 if not specified
+func (h *Handler) GetHelloProtocolVersion(cmd resp.Value) int {
+	if cmd.Type != resp.Array || len(cmd.Array) < 2 {
+		return 2
+	}
+
+	args := cmd.Array[1:]
+	if len(args) > 0 {
+		if v, err := strconv.Atoi(args[0].Bulk); err == nil && v >= 2 && v <= 3 {
+			return v
+		}
+	}
+	return 2
 }
 
 // CheckHelloAuth checks if HELLO command contains valid AUTH credentials
@@ -318,13 +357,16 @@ func (h *Handler) command(args []resp.Value) resp.Value {
 }
 
 func (h *Handler) hello(args []resp.Value) resp.Value {
-	protover := 3
+	// Default to RESP2, but we now support RESP3 as well
+	protover := 2
 
 	if len(args) > 0 {
+		// Parse requested protocol version
 		if v, err := strconv.Atoi(args[0].Bulk); err == nil {
 			if v < 2 || v > 3 {
 				return resp.Err("NOPROTO unsupported protocol version")
 			}
+			// Accept the requested version (we now support both 2 and 3)
 			protover = v
 		}
 

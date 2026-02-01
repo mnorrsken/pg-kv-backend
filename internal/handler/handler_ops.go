@@ -5,6 +5,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"log"
 	"runtime"
 	"strconv"
 	"strings"
@@ -507,6 +508,14 @@ func (h *Handler) hgetallOp(ctx context.Context, ops storage.Operations, args []
 		return resp.Err(err.Error())
 	}
 
+	log.Printf("[DEBUG] HGETALL %s returning %d fields", args[0].Bulk, len(fields))
+
+	// Use RESP3 Map type if client supports it, otherwise use flat array (RESP2)
+	if UseRESP3(ctx) {
+		return resp.MapVal(fields)
+	}
+
+	// RESP2: Return flat array [field1, value1, field2, value2, ...]
 	result := make([]resp.Value, 0, len(fields)*2)
 	for key, value := range fields {
 		result = append(result, resp.Bulk(key), resp.Bulk(value))
@@ -621,6 +630,97 @@ func (h *Handler) hlenOp(ctx context.Context, ops storage.Operations, args []res
 		return resp.Err(err.Error())
 	}
 	return resp.Int(length)
+}
+
+func (h *Handler) hscanOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("hscan")
+	}
+
+	key := args[0].Bulk
+	// cursor is args[1], we ignore it since we return all results at once
+
+	// Parse optional MATCH and COUNT arguments
+	var pattern string
+	for i := 2; i < len(args)-1; i += 2 {
+		opt := strings.ToUpper(args[i].Bulk)
+		switch opt {
+		case "MATCH":
+			pattern = args[i+1].Bulk
+		case "COUNT":
+			// Ignore COUNT, we return all matches
+		}
+	}
+
+	// Get all fields from the hash
+	fields, err := ops.HGetAll(ctx, key)
+	if err != nil {
+		return resp.Err(err.Error())
+	}
+
+	// Build result array with field-value pairs
+	result := make([]resp.Value, 0, len(fields)*2)
+	for field, value := range fields {
+		// Apply pattern matching if specified
+		if pattern != "" && pattern != "*" {
+			matched, _ := matchGlob(pattern, field)
+			if !matched {
+				continue
+			}
+		}
+		result = append(result, resp.Bulk(field), resp.Bulk(value))
+	}
+
+	// HSCAN returns [cursor, [field1, value1, field2, value2, ...]]
+	// We always return cursor "0" to indicate scan is complete
+	return resp.Arr(
+		resp.Bulk("0"),
+		resp.Arr(result...),
+	)
+}
+
+// matchGlob performs simple glob pattern matching (supports * and ?)
+func matchGlob(pattern, s string) (bool, error) {
+	pi, si := 0, 0
+	starIdx, matchIdx := -1, 0
+
+	for si < len(s) {
+		if pi < len(pattern) && (pattern[pi] == '?' || pattern[pi] == s[si]) {
+			pi++
+			si++
+		} else if pi < len(pattern) && pattern[pi] == '*' {
+			starIdx = pi
+			matchIdx = si
+			pi++
+		} else if starIdx != -1 {
+			pi = starIdx + 1
+			matchIdx++
+			si = matchIdx
+		} else {
+			return false, nil
+		}
+	}
+
+	for pi < len(pattern) && pattern[pi] == '*' {
+		pi++
+	}
+
+	return pi == len(pattern), nil
+}
+
+// ============== Watch Commands ==============
+// WATCH and UNWATCH are used for optimistic locking in Redis.
+// Since we use PostgreSQL transactions with proper isolation,
+// we implement these as no-ops for compatibility.
+
+func (h *Handler) watchOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	// WATCH is a no-op - PostgreSQL transactions provide proper isolation
+	return resp.OK()
+}
+
+func (h *Handler) unwatchOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	// UNWATCH is a no-op - PostgreSQL transactions provide proper isolation
+	return resp.OK()
 }
 
 // ============== List Commands ==============
@@ -942,6 +1042,14 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.hvalsOp(ctx, ops, args)
 	case "HLEN":
 		return h.hlenOp(ctx, ops, args)
+	case "HSCAN":
+		return h.hscanOp(ctx, ops, args)
+
+	// Watch commands (no-ops for PostgreSQL compatibility)
+	case "WATCH":
+		return h.watchOp(ctx, ops, args)
+	case "UNWATCH":
+		return h.unwatchOp(ctx, ops, args)
 
 	// List commands
 	case "LPUSH":

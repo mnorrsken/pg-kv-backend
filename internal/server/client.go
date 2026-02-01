@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -23,6 +24,9 @@ type ClientState struct {
 	LibVersion  string
 	mu          sync.RWMutex
 	
+	// Protocol version (2 or 3, defaults to 2 for RESP2)
+	protocolVersion int
+	
 	// Transaction state
 	inTransaction   bool
 	queuedCommands  []resp.Value
@@ -35,16 +39,43 @@ type ClientState struct {
 
 // NewClientState creates a new client state for a connection
 func NewClientState(conn net.Conn) *ClientState {
+	id := atomic.AddUint64(&clientIDCounter, 1)
+	addr := conn.RemoteAddr().String()
+	log.Printf("[DEBUG] New client %d created from %s", id, addr)
 	return &ClientState{
-		ID:        atomic.AddUint64(&clientIDCounter, 1),
-		Addr:      conn.RemoteAddr().String(),
-		CreatedAt: time.Now(),
+		ID:              id,
+		Addr:            addr,
+		CreatedAt:       time.Now(),
+		protocolVersion: 2, // Default to RESP2
 	}
 }
 
 // GetID returns the client ID
 func (c *ClientState) GetID() uint64 {
 	return c.ID
+}
+
+// GetProtocolVersion returns the RESP protocol version (2 or 3)
+func (c *ClientState) GetProtocolVersion() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.protocolVersion
+}
+
+// SetProtocolVersion sets the RESP protocol version
+func (c *ClientState) SetProtocolVersion(version int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if version >= 2 && version <= 3 {
+		c.protocolVersion = version
+	}
+}
+
+// UseRESP3 returns true if the client requested RESP3
+func (c *ClientState) UseRESP3() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.protocolVersion >= 3
 }
 
 // GetName returns the client name
@@ -159,6 +190,9 @@ func (c *ClientState) SetWriter(w *resp.Writer) {
 func (c *ClientState) EnterPubSubMode() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.inPubSubMode {
+		log.Printf("[DEBUG] Client %d (%s) entering pub/sub mode", c.ID, c.Addr)
+	}
 	c.inPubSubMode = true
 }
 
@@ -166,6 +200,9 @@ func (c *ClientState) EnterPubSubMode() {
 func (c *ClientState) ExitPubSubMode() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.inPubSubMode {
+		log.Printf("[DEBUG] Client %d (%s) exiting pub/sub mode", c.ID, c.Addr)
+	}
 	c.inPubSubMode = false
 }
 

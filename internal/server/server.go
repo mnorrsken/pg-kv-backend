@@ -125,6 +125,9 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 	// Clean up subscriptions when connection closes
 	defer func() {
+		if s.debug {
+			log.Printf("[DEBUG] Client %d (%s) connection closing, inPubSubMode=%v", client.GetID(), conn.RemoteAddr(), client.InPubSubMode())
+		}
 		if s.pubsub != nil {
 			s.pubsub.RemoveSubscriber(client.GetID())
 		}
@@ -159,19 +162,28 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		// Check authentication before processing commands
 		var response resp.Value
 		var multiResponse []resp.Value
+		
+		// Add protocol version to context for handlers
+		cmdCtx := handler.WithProtocolVersion(ctx, client.GetProtocolVersion())
+		
 		if cmd.Type == resp.Array && len(cmd.Array) > 0 {
 			cmdName := strings.ToUpper(cmd.Array[0].Bulk)
 
 			// Handle AUTH command specially
 			if cmdName == "AUTH" {
-				response = s.handler.Handle(ctx, cmd)
+				response = s.handler.Handle(cmdCtx, cmd)
 				if response.Type == resp.SimpleString && response.Str == "OK" {
 					authenticated = true
 				}
 			} else if cmdName == "HELLO" {
 				// Check if HELLO contains AUTH credentials
 				hasAuth, authSuccess := s.handler.CheckHelloAuth(cmd)
-				response = s.handler.Handle(ctx, cmd)
+				// Get and set the protocol version from HELLO
+				protoVersion := s.handler.GetHelloProtocolVersion(cmd)
+				client.SetProtocolVersion(protoVersion)
+				// Update cmdCtx with the new protocol version
+				cmdCtx = handler.WithProtocolVersion(ctx, protoVersion)
+				response = s.handler.Handle(cmdCtx, cmd)
 				// If HELLO included AUTH and it succeeded, mark as authenticated
 				if hasAuth && authSuccess && response.Type != resp.Error {
 					authenticated = true
@@ -179,7 +191,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			} else if !authenticated {
 				// Allow only PING, QUIT, COMMAND, and HELLO without auth
 				if cmdName == "PING" || cmdName == "QUIT" || cmdName == "COMMAND" || cmdName == "HELLO" {
-					response = s.handler.Handle(ctx, cmd)
+					response = s.handler.Handle(cmdCtx, cmd)
 				} else {
 					if s.debug {
 						log.Printf("[DEBUG] NOAUTH: client %s attempted %s without authentication", conn.RemoteAddr(), cmdName)
@@ -188,8 +200,11 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 				}
 			} else if cmdName == "SUBSCRIBE" {
 				// Handle SUBSCRIBE command
+				if s.debug {
+					log.Printf("[DEBUG] Client %s calling SUBSCRIBE with channels: %v", conn.RemoteAddr(), extractBulkStrings(cmd.Array[1:]))
+				}
 				if s.pubsub == nil {
-					response = resp.Err("ERR pub/sub is not enabled")
+					response = resp.Err("pub/sub is not enabled")
 				} else {
 					channels := extractBulkStrings(cmd.Array[1:])
 					multiResponse = s.handler.HandleSubscribe(s.pubsub, client, channels)
@@ -197,7 +212,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			} else if cmdName == "UNSUBSCRIBE" {
 				// Handle UNSUBSCRIBE command
 				if s.pubsub == nil {
-					response = resp.Err("ERR pub/sub is not enabled")
+					response = resp.Err("pub/sub is not enabled")
 				} else {
 					channels := extractBulkStrings(cmd.Array[1:])
 					multiResponse = s.handler.HandleUnsubscribe(s.pubsub, client, channels)
@@ -205,7 +220,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			} else if cmdName == "PSUBSCRIBE" {
 				// Handle PSUBSCRIBE command
 				if s.pubsub == nil {
-					response = resp.Err("ERR pub/sub is not enabled")
+					response = resp.Err("pub/sub is not enabled")
 				} else {
 					patterns := extractBulkStrings(cmd.Array[1:])
 					multiResponse = s.handler.HandlePSubscribe(s.pubsub, client, patterns)
@@ -213,7 +228,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			} else if cmdName == "PUNSUBSCRIBE" {
 				// Handle PUNSUBSCRIBE command
 				if s.pubsub == nil {
-					response = resp.Err("ERR pub/sub is not enabled")
+					response = resp.Err("pub/sub is not enabled")
 				} else {
 					patterns := extractBulkStrings(cmd.Array[1:])
 					multiResponse = s.handler.HandlePUnsubscribe(s.pubsub, client, patterns)
@@ -221,7 +236,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			} else if cmdName == "PUBLISH" {
 				// Handle PUBLISH command
 				if s.pubsub == nil {
-					response = resp.Err("ERR pub/sub is not enabled")
+					response = resp.Err("pub/sub is not enabled")
 				} else if len(cmd.Array) < 3 {
 					response = resp.ErrWrongArgs("publish")
 				} else {
@@ -232,16 +247,19 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			} else if client.InPubSubMode() {
 				// In pub/sub mode, only allow SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PING, QUIT
 				if cmdName == "PING" || cmdName == "QUIT" {
-					response = s.handler.Handle(ctx, cmd)
+					response = s.handler.Handle(cmdCtx, cmd)
 				} else {
-					response = resp.Err("ERR only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT allowed in this context")
+					if s.debug {
+						log.Printf("[DEBUG] Client %d (%s) blocked command %s - in pub/sub mode", client.GetID(), conn.RemoteAddr(), cmdName)
+					}
+					response = resp.Err("only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT allowed in this context")
 				}
 			} else if cmdName == "MULTI" {
 				// Start a transaction
 				response = s.handler.HandleMulti(client)
 			} else if cmdName == "EXEC" {
 				// Execute queued commands
-				response = s.handler.HandleExec(ctx, client)
+				response = s.handler.HandleExec(cmdCtx, client)
 			} else if cmdName == "DISCARD" {
 				// Discard the transaction
 				response = s.handler.HandleDiscard(client)
@@ -253,10 +271,10 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 				// Handle CLIENT commands with client state
 				response = s.handler.HandleClient(cmd, client)
 			} else {
-				response = s.handler.Handle(ctx, cmd)
+				response = s.handler.Handle(cmdCtx, cmd)
 			}
 		} else {
-			response = s.handler.Handle(ctx, cmd)
+			response = s.handler.Handle(cmdCtx, cmd)
 		}
 
 		// Log error responses when debug is enabled
