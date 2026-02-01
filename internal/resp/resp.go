@@ -225,6 +225,8 @@ func (w *Writer) WriteValue(v Value) error {
 		}
 	case Map:
 		err = w.WriteMap(v.MapData)
+	case Push:
+		err = w.WritePush(v.Array)
 	default:
 		err = fmt.Errorf("unknown RESP type: %c", v.Type)
 	}
@@ -270,6 +272,20 @@ func (w *Writer) WriteNullArray() error {
 // WriteArray writes an array of values
 func (w *Writer) WriteArray(arr []Value) error {
 	if _, err := w.writer.WriteString("*" + strconv.Itoa(len(arr)) + "\r\n"); err != nil {
+		return err
+	}
+	for _, v := range arr {
+		if err := w.WriteValue(v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WritePush writes a RESP3 Push (out-of-band data) value
+// Push is used for pub/sub messages in RESP3 - it's like an Array but with '>' prefix
+func (w *Writer) WritePush(arr []Value) error {
+	if _, err := w.writer.WriteString(">" + strconv.Itoa(len(arr)) + "\r\n"); err != nil {
 		return err
 	}
 	for _, v := range arr {

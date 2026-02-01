@@ -224,11 +224,18 @@ func (c *ClientState) SendPubSubMessage(msgType, channel, payload string) error 
 	}
 
 	var response resp.Value
+	
+	// RESP3 clients receive pub/sub messages as Push type (>)
+	// RESP2 clients receive them as regular arrays
+	respType := resp.Array
+	if c.UseRESP3() {
+		respType = resp.Push
+	}
 
 	switch msgType {
 	case "message":
 		response = resp.Value{
-			Type: resp.Array,
+			Type: respType,
 			Array: []resp.Value{
 				resp.Bulk("message"),
 				resp.Bulk(channel),
@@ -242,7 +249,7 @@ func (c *ClientState) SendPubSubMessage(msgType, channel, payload string) error 
 			return fmt.Errorf("invalid pmessage channel format")
 		}
 		response = resp.Value{
-			Type: resp.Array,
+			Type: respType,
 			Array: []resp.Value{
 				resp.Bulk("pmessage"),
 				resp.Bulk(parts[0]), // pattern

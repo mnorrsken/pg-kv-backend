@@ -244,13 +244,14 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 					message := cmd.Array[2].Bulk
 					response = s.handler.HandlePublish(ctx, s.pubsub, channel, message)
 				}
-			} else if client.InPubSubMode() {
-				// In pub/sub mode, only allow SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PING, QUIT
+			} else if client.InPubSubMode() && !client.UseRESP3() {
+				// In RESP2 pub/sub mode, only allow SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PING, QUIT
+				// RESP3 clients can continue to use regular commands while subscribed (using Push type for messages)
 				if cmdName == "PING" || cmdName == "QUIT" {
 					response = s.handler.Handle(cmdCtx, cmd)
 				} else {
 					if s.debug {
-						log.Printf("[DEBUG] Client %d (%s) blocked command %s - in pub/sub mode", client.GetID(), conn.RemoteAddr(), cmdName)
+						log.Printf("[DEBUG] Client %d (%s) blocked command %s - in RESP2 pub/sub mode", client.GetID(), conn.RemoteAddr(), cmdName)
 					}
 					response = resp.Err("only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT allowed in this context")
 				}
