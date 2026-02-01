@@ -1047,6 +1047,306 @@ func (m *MockStore) ZCard(ctx context.Context, key string) (int64, error) {
 	return 0, nil
 }
 
+func (m *MockStore) ZRangeByScore(ctx context.Context, key string, min, max float64, withScores bool, offset, count int64) ([]ZMember, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return nil, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok {
+		return nil, nil
+	}
+
+	// Collect members in score range
+	var members []ZMember
+	for member, score := range zset {
+		if score >= min && score <= max {
+			members = append(members, ZMember{Member: member, Score: score})
+		}
+	}
+
+	// Sort by score, then by member
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].Score != members[j].Score {
+			return members[i].Score < members[j].Score
+		}
+		return members[i].Member < members[j].Member
+	})
+
+	// Apply offset and count
+	if offset > 0 {
+		if offset >= int64(len(members)) {
+			return nil, nil
+		}
+		members = members[offset:]
+	}
+	if count > 0 && count < int64(len(members)) {
+		members = members[:count]
+	}
+
+	return members, nil
+}
+
+func (m *MockStore) ZRemRangeByScore(ctx context.Context, key string, min, max float64) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok {
+		return 0, nil
+	}
+
+	var removed int64
+	for member, score := range zset {
+		if score >= min && score <= max {
+			delete(zset, member)
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+func (m *MockStore) ZRemRangeByRank(ctx context.Context, key string, start, stop int64) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok {
+		return 0, nil
+	}
+
+	// Get sorted members
+	var members []ZMember
+	for member, score := range zset {
+		members = append(members, ZMember{Member: member, Score: score})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].Score != members[j].Score {
+			return members[i].Score < members[j].Score
+		}
+		return members[i].Member < members[j].Member
+	})
+
+	// Handle negative indices
+	count := int64(len(members))
+	if start < 0 {
+		start = count + start
+	}
+	if stop < 0 {
+		stop = count + stop
+	}
+	if start < 0 {
+		start = 0
+	}
+	if stop >= count {
+		stop = count - 1
+	}
+	if start > stop || start >= count {
+		return 0, nil
+	}
+
+	// Remove members in range
+	var removed int64
+	for i := start; i <= stop; i++ {
+		delete(zset, members[i].Member)
+		removed++
+	}
+	return removed, nil
+}
+
+func (m *MockStore) ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		delete(m.strings, key)
+		delete(m.hashes, key)
+		delete(m.lists, key)
+		delete(m.sets, key)
+		delete(m.zsets, key)
+		delete(m.keyTypes, key)
+		delete(m.expiresAt, key)
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	if m.zsets[key] == nil {
+		m.zsets[key] = make(map[string]float64)
+		m.keyTypes[key] = TypeZSet
+	}
+
+	m.zsets[key][member] += increment
+	return m.zsets[key][member], nil
+}
+
+func (m *MockStore) ZPopMin(ctx context.Context, key string, count int64) ([]ZMember, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		return nil, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok || len(zset) == 0 {
+		return nil, nil
+	}
+
+	// Get sorted members
+	var members []ZMember
+	for member, score := range zset {
+		members = append(members, ZMember{Member: member, Score: score})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].Score != members[j].Score {
+			return members[i].Score < members[j].Score
+		}
+		return members[i].Member < members[j].Member
+	})
+
+	// Pop min members
+	if count > int64(len(members)) {
+		count = int64(len(members))
+	}
+
+	result := members[:count]
+	for _, m2 := range result {
+		delete(zset, m2.Member)
+	}
+
+	return result, nil
+}
+
+func (m *MockStore) LRem(ctx context.Context, key string, count int64, element string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeList {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	list, ok := m.lists[key]
+	if !ok {
+		return 0, nil
+	}
+
+	var removed int64
+	var newList []string
+
+	if count == 0 {
+		// Remove all occurrences
+		for _, v := range list {
+			if v == element {
+				removed++
+			} else {
+				newList = append(newList, v)
+			}
+		}
+	} else if count > 0 {
+		// Remove count occurrences from head
+		for _, v := range list {
+			if v == element && removed < count {
+				removed++
+			} else {
+				newList = append(newList, v)
+			}
+		}
+	} else {
+		// Remove -count occurrences from tail
+		absCount := -count
+		// Count occurrences
+		var indices []int
+		for i, v := range list {
+			if v == element {
+				indices = append(indices, i)
+			}
+		}
+		// Keep only those to remove from tail
+		removeSet := make(map[int]bool)
+		for i := len(indices) - 1; i >= 0 && removed < absCount; i-- {
+			removeSet[indices[i]] = true
+			removed++
+		}
+		for i, v := range list {
+			if !removeSet[i] {
+				newList = append(newList, v)
+			}
+		}
+	}
+
+	m.lists[key] = newList
+	return removed, nil
+}
+
+func (m *MockStore) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(source) {
+		delete(m.lists, source)
+		delete(m.keyTypes, source)
+		delete(m.expiresAt, source)
+	}
+
+	if t, ok := m.keyTypes[source]; ok && t != TypeList {
+		return "", false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+	if t, ok := m.keyTypes[destination]; ok && t != TypeList {
+		return "", false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	srcList, ok := m.lists[source]
+	if !ok || len(srcList) == 0 {
+		return "", false, nil
+	}
+
+	// Pop from right
+	value := srcList[len(srcList)-1]
+	m.lists[source] = srcList[:len(srcList)-1]
+
+	// Push to left of destination
+	if m.lists[destination] == nil {
+		m.lists[destination] = []string{}
+		m.keyTypes[destination] = TypeList
+	}
+	m.lists[destination] = append([]string{value}, m.lists[destination]...)
+
+	return value, true, nil
+}
+
 // ============== Server Commands ==============
 
 func (m *MockStore) DBSize(ctx context.Context) (int64, error) {

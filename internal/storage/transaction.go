@@ -214,6 +214,34 @@ func (t *TxStore) ZCard(ctx context.Context, key string) (int64, error) {
 	return t.ops.zCard(ctx, t.tx, key)
 }
 
+func (t *TxStore) ZRangeByScore(ctx context.Context, key string, min, max float64, withScores bool, offset, count int64) ([]ZMember, error) {
+	return t.ops.zRangeByScore(ctx, t.tx, key, min, max, withScores, offset, count)
+}
+
+func (t *TxStore) ZRemRangeByScore(ctx context.Context, key string, min, max float64) (int64, error) {
+	return t.ops.zRemRangeByScore(ctx, t.tx, key, min, max)
+}
+
+func (t *TxStore) ZRemRangeByRank(ctx context.Context, key string, start, stop int64) (int64, error) {
+	return t.ops.zRemRangeByRank(ctx, t.tx, key, start, stop)
+}
+
+func (t *TxStore) ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error) {
+	return t.ops.zIncrBy(ctx, t.tx, key, increment, member)
+}
+
+func (t *TxStore) ZPopMin(ctx context.Context, key string, count int64) ([]ZMember, error) {
+	return t.ops.zPopMin(ctx, t.tx, key, count)
+}
+
+func (t *TxStore) LRem(ctx context.Context, key string, count int64, element string) (int64, error) {
+	return t.ops.lRem(ctx, t.tx, key, count, element)
+}
+
+func (t *TxStore) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
+	return t.ops.rPopLPush(ctx, t.tx, source, destination)
+}
+
 // ============== Server Commands ==============
 
 func (t *TxStore) DBSize(ctx context.Context) (int64, error) {

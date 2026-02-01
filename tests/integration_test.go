@@ -3238,6 +3238,326 @@ func TestEvalListOperations(t *testing.T) {
 	}
 }
 
+// ============== Additional Sorted Set Command Tests (Sidekiq) ==============
+
+func TestZRangeByScore(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add members with different scores
+	ts.client.ZAdd(ctx, "myzset", redis.Z{Score: 1, Member: "one"})
+	ts.client.ZAdd(ctx, "myzset", redis.Z{Score: 2, Member: "two"})
+	ts.client.ZAdd(ctx, "myzset", redis.Z{Score: 3, Member: "three"})
+	ts.client.ZAdd(ctx, "myzset", redis.Z{Score: 4, Member: "four"})
+
+	// Get members with score between 2 and 3
+	members, err := ts.client.ZRangeByScore(ctx, "myzset", &redis.ZRangeBy{
+		Min: "2",
+		Max: "3",
+	}).Result()
+	if err != nil {
+		t.Fatalf("ZRANGEBYSCORE failed: %v", err)
+	}
+	if len(members) != 2 {
+		t.Errorf("Expected 2 members, got %d: %v", len(members), members)
+	}
+}
+
+func TestZRangeByScoreWithLimit(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add many members
+	for i := 0; i < 10; i++ {
+		ts.client.ZAdd(ctx, "myzset", redis.Z{Score: float64(i), Member: fmt.Sprintf("member%d", i)})
+	}
+
+	// Get first 3 members with LIMIT
+	members, err := ts.client.ZRangeByScore(ctx, "myzset", &redis.ZRangeBy{
+		Min:    "-inf",
+		Max:    "+inf",
+		Offset: 0,
+		Count:  3,
+	}).Result()
+	if err != nil {
+		t.Fatalf("ZRANGEBYSCORE with LIMIT failed: %v", err)
+	}
+	if len(members) != 3 {
+		t.Errorf("Expected 3 members, got %d", len(members))
+	}
+}
+
+func TestZRemRangeByScore(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add members
+	ts.client.ZAdd(ctx, "myzset",
+		redis.Z{Score: 1, Member: "one"},
+		redis.Z{Score: 2, Member: "two"},
+		redis.Z{Score: 3, Member: "three"},
+	)
+
+	// Remove members with score between 1 and 2
+	removed, err := ts.client.ZRemRangeByScore(ctx, "myzset", "1", "2").Result()
+	if err != nil {
+		t.Fatalf("ZREMRANGEBYSCORE failed: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("Expected 2 removed, got %d", removed)
+	}
+
+	// Only "three" should remain
+	count, _ := ts.client.ZCard(ctx, "myzset").Result()
+	if count != 1 {
+		t.Errorf("Expected 1 remaining, got %d", count)
+	}
+}
+
+func TestZRemRangeByRank(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add members
+	ts.client.ZAdd(ctx, "myzset",
+		redis.Z{Score: 1, Member: "one"},
+		redis.Z{Score: 2, Member: "two"},
+		redis.Z{Score: 3, Member: "three"},
+	)
+
+	// Remove first two members (rank 0 to 1)
+	removed, err := ts.client.ZRemRangeByRank(ctx, "myzset", 0, 1).Result()
+	if err != nil {
+		t.Fatalf("ZREMRANGEBYRANK failed: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("Expected 2 removed, got %d", removed)
+	}
+}
+
+func TestZIncrBy(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Increment non-existent member
+	score, err := ts.client.ZIncrBy(ctx, "myzset", 5.5, "member").Result()
+	if err != nil {
+		t.Fatalf("ZINCRBY failed: %v", err)
+	}
+	if score != 5.5 {
+		t.Errorf("Expected 5.5, got %f", score)
+	}
+
+	// Increment existing member
+	score, err = ts.client.ZIncrBy(ctx, "myzset", 2.5, "member").Result()
+	if err != nil {
+		t.Fatalf("ZINCRBY failed: %v", err)
+	}
+	if score != 8.0 {
+		t.Errorf("Expected 8.0, got %f", score)
+	}
+}
+
+func TestZPopMin(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add members
+	ts.client.ZAdd(ctx, "myzset",
+		redis.Z{Score: 3, Member: "three"},
+		redis.Z{Score: 1, Member: "one"},
+		redis.Z{Score: 2, Member: "two"},
+	)
+
+	// Pop lowest scored member
+	result, err := ts.client.ZPopMin(ctx, "myzset", 1).Result()
+	if err != nil {
+		t.Fatalf("ZPOPMIN failed: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 member, got %d", len(result))
+	}
+	if result[0].Member != "one" {
+		t.Errorf("Expected 'one', got '%s'", result[0].Member)
+	}
+	if result[0].Score != 1 {
+		t.Errorf("Expected score 1, got %f", result[0].Score)
+	}
+
+	// Verify it was removed
+	count, _ := ts.client.ZCard(ctx, "myzset").Result()
+	if count != 2 {
+		t.Errorf("Expected 2 remaining, got %d", count)
+	}
+}
+
+// ============== Additional List Command Tests (Sidekiq) ==============
+
+func TestLRem(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create list with duplicates
+	ts.client.RPush(ctx, "mylist", "a", "b", "a", "c", "a")
+
+	// Remove 2 occurrences of "a" from head
+	removed, err := ts.client.LRem(ctx, "mylist", 2, "a").Result()
+	if err != nil {
+		t.Fatalf("LREM failed: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("Expected 2 removed, got %d", removed)
+	}
+
+	// List should now be: b, c, a
+	result, _ := ts.client.LRange(ctx, "mylist", 0, -1).Result()
+	if len(result) != 3 {
+		t.Errorf("Expected 3 elements, got %d: %v", len(result), result)
+	}
+}
+
+func TestLRemFromTail(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create list with duplicates
+	ts.client.RPush(ctx, "mylist", "a", "b", "a", "c", "a")
+
+	// Remove 2 occurrences of "a" from tail (negative count)
+	removed, err := ts.client.LRem(ctx, "mylist", -2, "a").Result()
+	if err != nil {
+		t.Fatalf("LREM failed: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("Expected 2 removed, got %d", removed)
+	}
+
+	// List should now be: a, b, c
+	result, _ := ts.client.LRange(ctx, "mylist", 0, -1).Result()
+	if len(result) != 3 {
+		t.Errorf("Expected 3 elements, got %d: %v", len(result), result)
+	}
+}
+
+func TestRPopLPush(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create source list
+	ts.client.RPush(ctx, "source", "one", "two", "three")
+
+	// Pop from source, push to dest
+	result, err := ts.client.RPopLPush(ctx, "source", "dest").Result()
+	if err != nil {
+		t.Fatalf("RPOPLPUSH failed: %v", err)
+	}
+	if result != "three" {
+		t.Errorf("Expected 'three', got '%s'", result)
+	}
+
+	// Source should have 2 elements
+	srcLen, _ := ts.client.LLen(ctx, "source").Result()
+	if srcLen != 2 {
+		t.Errorf("Expected source length 2, got %d", srcLen)
+	}
+
+	// Dest should have 1 element
+	destLen, _ := ts.client.LLen(ctx, "dest").Result()
+	if destLen != 1 {
+		t.Errorf("Expected dest length 1, got %d", destLen)
+	}
+}
+
+func TestRPopLPushEmpty(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// RPOPLPUSH on empty list should return nil
+	_, err := ts.client.RPopLPush(ctx, "empty", "dest").Result()
+	if err != redis.Nil {
+		t.Errorf("Expected redis.Nil for empty source, got %v", err)
+	}
+}
+
+// ============== Set Scan Tests ==============
+
+func TestSScan(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add some members
+	ts.client.SAdd(ctx, "myset", "member1", "member2", "member3")
+
+	// Scan all members
+	var allMembers []string
+	cursor := uint64(0)
+	for {
+		members, nextCursor, err := ts.client.SScan(ctx, "myset", cursor, "*", 10).Result()
+		if err != nil {
+			t.Fatalf("SSCAN failed: %v", err)
+		}
+		allMembers = append(allMembers, members...)
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	if len(allMembers) != 3 {
+		t.Errorf("Expected 3 members, got %d: %v", len(allMembers), allMembers)
+	}
+}
+
+// ============== UNLINK Test ==============
+
+func TestUnlink(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set some keys
+	ts.client.Set(ctx, "key1", "value1", 0)
+	ts.client.Set(ctx, "key2", "value2", 0)
+
+	// UNLINK (should work like DEL)
+	deleted, err := ts.client.Unlink(ctx, "key1", "key2", "nonexistent").Result()
+	if err != nil {
+		t.Fatalf("UNLINK failed: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("Expected 2 deleted, got %d", deleted)
+	}
+
+	// Verify keys are gone
+	exists, _ := ts.client.Exists(ctx, "key1", "key2").Result()
+	if exists != 0 {
+		t.Errorf("Expected 0 keys to exist, got %d", exists)
+	}
+}
+
 // ============== WATCH/UNWATCH Command Tests ==============
 
 func TestWatch(t *testing.T) {

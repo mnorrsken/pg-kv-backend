@@ -11,11 +11,11 @@ A Redis 7 API-compatible server that uses PostgreSQL as the backend storage.
 - Transaction support (MULTI/EXEC/DISCARD)
 - Supports common Redis commands:
   - **String commands**: GET, SET, SETNX, SETEX, MGET, MSET, INCR, DECR, INCRBY, DECRBY, APPEND
-  - **Key commands**: DEL, EXISTS, EXPIRE, TTL, PTTL, PERSIST, KEYS, TYPE, RENAME, SCAN
+  - **Key commands**: DEL, UNLINK, EXISTS, EXPIRE, TTL, PTTL, PERSIST, KEYS, TYPE, RENAME, SCAN
   - **Hash commands**: HGET, HSET, HDEL, HGETALL, HMGET, HMSET, HEXISTS, HKEYS, HVALS, HLEN, HSCAN
-  - **List commands**: LPUSH, RPUSH, LPOP, RPOP, BLPOP, BRPOP, LLEN, LRANGE, LINDEX
-  - **Set commands**: SADD, SREM, SMEMBERS, SISMEMBER, SCARD
-  - **Sorted set commands**: ZADD, ZRANGE, ZSCORE, ZREM, ZCARD
+  - **List commands**: LPUSH, RPUSH, LPOP, RPOP, BLPOP, BRPOP, LLEN, LRANGE, LINDEX, LREM, RPOPLPUSH
+  - **Set commands**: SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SSCAN
+  - **Sorted set commands**: ZADD, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZREM, ZREMRANGEBYSCORE, ZREMRANGEBYRANK, ZCARD, ZINCRBY, ZPOPMIN
   - **Pub/Sub commands**: SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH
   - **Transaction commands**: MULTI, EXEC, DISCARD, WATCH, UNWATCH
   - **Scripting commands**: EVAL, EVALSHA, SCRIPT LOAD, SCRIPT EXISTS, SCRIPT FLUSH

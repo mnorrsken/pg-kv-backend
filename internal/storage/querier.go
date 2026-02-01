@@ -3,6 +3,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -1053,6 +1054,271 @@ func (o queryOps) zCard(ctx context.Context, q Querier, key string) (int64, erro
 		key,
 	).Scan(&count)
 	return count, err
+}
+
+func (o queryOps) zRangeByScore(ctx context.Context, q Querier, key string, min, max float64, withScores bool, offset, count int64) ([]ZMember, error) {
+	var query string
+	var args []interface{}
+
+	if count > 0 {
+		query = `SELECT member, score FROM kv_zsets 
+			 WHERE key = $1 AND score >= $2 AND score <= $3 AND (expires_at IS NULL OR expires_at > NOW())
+			 ORDER BY score ASC, member ASC
+			 LIMIT $4 OFFSET $5`
+		args = []interface{}{key, min, max, count, offset}
+	} else {
+		query = `SELECT member, score FROM kv_zsets 
+			 WHERE key = $1 AND score >= $2 AND score <= $3 AND (expires_at IS NULL OR expires_at > NOW())
+			 ORDER BY score ASC, member ASC`
+		args = []interface{}{key, min, max}
+	}
+
+	rows, err := q.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []ZMember
+	for rows.Next() {
+		var member []byte
+		var score float64
+		if err := rows.Scan(&member, &score); err != nil {
+			return nil, err
+		}
+		members = append(members, ZMember{Member: string(member), Score: score})
+	}
+	return members, nil
+}
+
+func (o queryOps) zRemRangeByScore(ctx context.Context, q Querier, key string, min, max float64) (int64, error) {
+	result, err := q.Exec(ctx,
+		"DELETE FROM kv_zsets WHERE key = $1 AND score >= $2 AND score <= $3",
+		key, min, max,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+func (o queryOps) zRemRangeByRank(ctx context.Context, q Querier, key string, start, stop int64) (int64, error) {
+	// Get total count first to handle negative indices
+	var count int64
+	err := q.QueryRow(ctx,
+		"SELECT COUNT(*) FROM kv_zsets WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+
+	// Convert negative indices
+	if start < 0 {
+		start = count + start
+	}
+	if stop < 0 {
+		stop = count + stop
+	}
+	if start < 0 {
+		start = 0
+	}
+	if stop >= count {
+		stop = count - 1
+	}
+	if start > stop || start >= count {
+		return 0, nil
+	}
+
+	// Delete members within the rank range
+	result, err := q.Exec(ctx,
+		`DELETE FROM kv_zsets WHERE key = $1 AND member IN (
+			SELECT member FROM kv_zsets 
+			WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())
+			ORDER BY score ASC, member ASC
+			LIMIT $3 OFFSET $2
+		)`,
+		key, start, stop-start+1,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+func (o queryOps) zIncrBy(ctx context.Context, q Querier, key string, increment float64, member string) (float64, error) {
+	// Ensure meta entry exists
+	_, err := q.Exec(ctx,
+		`INSERT INTO kv_meta (key, type) VALUES ($1, 'zset') ON CONFLICT (key) DO NOTHING`,
+		key,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	var newScore float64
+	err = q.QueryRow(ctx,
+		`INSERT INTO kv_zsets (key, member, score) VALUES ($1, $2, $3)
+		 ON CONFLICT (key, member) DO UPDATE SET score = kv_zsets.score + EXCLUDED.score
+		 RETURNING score`,
+		key, []byte(member), increment,
+	).Scan(&newScore)
+	return newScore, err
+}
+
+func (o queryOps) zPopMin(ctx context.Context, q Querier, key string, count int64) ([]ZMember, error) {
+	// Get the lowest-scored members
+	rows, err := q.Query(ctx,
+		`SELECT member, score FROM kv_zsets 
+		 WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())
+		 ORDER BY score ASC, member ASC
+		 LIMIT $2`,
+		key, count,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []ZMember
+	for rows.Next() {
+		var member []byte
+		var score float64
+		if err := rows.Scan(&member, &score); err != nil {
+			return nil, err
+		}
+		members = append(members, ZMember{Member: string(member), Score: score})
+	}
+
+	// Delete the popped members
+	if len(members) > 0 {
+		memberBytes := make([][]byte, len(members))
+		for i, m := range members {
+			memberBytes[i] = []byte(m.Member)
+		}
+		_, err = q.Exec(ctx,
+			"DELETE FROM kv_zsets WHERE key = $1 AND member = ANY($2)",
+			key, memberBytes,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return members, nil
+}
+
+func (o queryOps) lRem(ctx context.Context, q Querier, key string, count int64, element string) (int64, error) {
+	// count > 0: Remove count elements from head
+	// count < 0: Remove -count elements from tail
+	// count = 0: Remove all elements
+
+	var result int64
+	if count == 0 {
+		// Remove all matching elements
+		res, err := q.Exec(ctx,
+			"DELETE FROM kv_lists WHERE key = $1 AND value = $2",
+			key, []byte(element),
+		)
+		if err != nil {
+			return 0, err
+		}
+		return res.RowsAffected(), nil
+	}
+
+	absCount := count
+	if count < 0 {
+		absCount = -count
+	}
+
+	var order string
+	if count > 0 {
+		order = "ASC"
+	} else {
+		order = "DESC"
+	}
+
+	// Delete specific number of elements from head or tail
+	res, err := q.Exec(ctx,
+		fmt.Sprintf(`DELETE FROM kv_lists WHERE ctid IN (
+			SELECT ctid FROM kv_lists 
+			WHERE key = $1 AND value = $2
+			ORDER BY position %s
+			LIMIT $3
+		)`, order),
+		key, []byte(element), absCount,
+	)
+	if err != nil {
+		return 0, err
+	}
+	result = res.RowsAffected()
+
+	return result, nil
+}
+
+func (o queryOps) rPopLPush(ctx context.Context, q Querier, source, destination string) (string, bool, error) {
+	// Pop from source (right)
+	var value []byte
+	var position int64
+
+	err := q.QueryRow(ctx,
+		`SELECT value, position FROM kv_lists 
+		 WHERE key = $1 
+		 ORDER BY position DESC 
+		 LIMIT 1 FOR UPDATE`,
+		source,
+	).Scan(&value, &position)
+
+	if err == pgx.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	// Delete from source
+	_, err = q.Exec(ctx,
+		"DELETE FROM kv_lists WHERE key = $1 AND position = $2",
+		source, position,
+	)
+	if err != nil {
+		return "", false, err
+	}
+
+	// Ensure meta entry exists for destination
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_meta (key, type) VALUES ($1, 'list') ON CONFLICT (key) DO NOTHING`,
+		destination,
+	)
+	if err != nil {
+		return "", false, err
+	}
+
+	// Get min position for destination (to insert at head)
+	var minPos sql.NullInt64
+	err = q.QueryRow(ctx,
+		"SELECT MIN(position) FROM kv_lists WHERE key = $1",
+		destination,
+	).Scan(&minPos)
+	if err != nil {
+		return "", false, err
+	}
+
+	newPos := int64(0)
+	if minPos.Valid {
+		newPos = minPos.Int64 - 1
+	}
+
+	// Push to destination (left)
+	_, err = q.Exec(ctx,
+		"INSERT INTO kv_lists (key, position, value) VALUES ($1, $2, $3)",
+		destination, newPos, value,
+	)
+	if err != nil {
+		return "", false, err
+	}
+
+	return string(value), true, nil
 }
 
 // ============== Server Commands ==============

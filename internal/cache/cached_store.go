@@ -280,6 +280,41 @@ func (s *CachedStore) ZCard(ctx context.Context, key string) (int64, error) {
 	return s.backend.ZCard(ctx, key)
 }
 
+func (s *CachedStore) ZRangeByScore(ctx context.Context, key string, min, max float64, withScores bool, offset, count int64) ([]storage.ZMember, error) {
+	return s.backend.ZRangeByScore(ctx, key, min, max, withScores, offset, count)
+}
+
+func (s *CachedStore) ZRemRangeByScore(ctx context.Context, key string, min, max float64) (int64, error) {
+	s.cache.Delete(key)
+	return s.backend.ZRemRangeByScore(ctx, key, min, max)
+}
+
+func (s *CachedStore) ZRemRangeByRank(ctx context.Context, key string, start, stop int64) (int64, error) {
+	s.cache.Delete(key)
+	return s.backend.ZRemRangeByRank(ctx, key, start, stop)
+}
+
+func (s *CachedStore) ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error) {
+	s.cache.Delete(key)
+	return s.backend.ZIncrBy(ctx, key, increment, member)
+}
+
+func (s *CachedStore) ZPopMin(ctx context.Context, key string, count int64) ([]storage.ZMember, error) {
+	s.cache.Delete(key)
+	return s.backend.ZPopMin(ctx, key, count)
+}
+
+func (s *CachedStore) LRem(ctx context.Context, key string, count int64, element string) (int64, error) {
+	s.cache.Delete(key)
+	return s.backend.LRem(ctx, key, count, element)
+}
+
+func (s *CachedStore) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
+	s.cache.Delete(source)
+	s.cache.Delete(destination)
+	return s.backend.RPopLPush(ctx, source, destination)
+}
+
 // ============== Server Commands ==============
 
 func (s *CachedStore) DBSize(ctx context.Context) (int64, error) {

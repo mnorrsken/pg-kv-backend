@@ -431,6 +431,53 @@ func (s *Store) ZCard(ctx context.Context, key string) (int64, error) {
 	return s.ops.zCard(ctx, s.pool, key)
 }
 
+func (s *Store) ZRangeByScore(ctx context.Context, key string, min, max float64, withScores bool, offset, count int64) ([]ZMember, error) {
+	return s.ops.zRangeByScore(ctx, s.pool, key, min, max, withScores, offset, count)
+}
+
+func (s *Store) ZRemRangeByScore(ctx context.Context, key string, min, max float64) (int64, error) {
+	return s.ops.zRemRangeByScore(ctx, s.pool, key, min, max)
+}
+
+func (s *Store) ZRemRangeByRank(ctx context.Context, key string, start, stop int64) (int64, error) {
+	return s.ops.zRemRangeByRank(ctx, s.pool, key, start, stop)
+}
+
+func (s *Store) ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error) {
+	var result float64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.zIncrBy(ctx, tx, key, increment, member)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) ZPopMin(ctx context.Context, key string, count int64) ([]ZMember, error) {
+	var result []ZMember
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.zPopMin(ctx, tx, key, count)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) LRem(ctx context.Context, key string, count int64, element string) (int64, error) {
+	return s.ops.lRem(ctx, s.pool, key, count, element)
+}
+
+func (s *Store) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
+	var result string
+	var found bool
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, found, err = s.ops.rPopLPush(ctx, tx, source, destination)
+		return err
+	})
+	return result, found, err
+}
+
 // ============== Server Commands ==============
 
 func (s *Store) DBSize(ctx context.Context) (int64, error) {

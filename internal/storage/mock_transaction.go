@@ -211,6 +211,34 @@ func (t *MockTransaction) ZCard(ctx context.Context, key string) (int64, error) 
 	return t.parent.ZCard(ctx, key)
 }
 
+func (t *MockTransaction) ZRangeByScore(ctx context.Context, key string, min, max float64, withScores bool, offset, count int64) ([]ZMember, error) {
+	return t.parent.ZRangeByScore(ctx, key, min, max, withScores, offset, count)
+}
+
+func (t *MockTransaction) ZRemRangeByScore(ctx context.Context, key string, min, max float64) (int64, error) {
+	return t.parent.ZRemRangeByScore(ctx, key, min, max)
+}
+
+func (t *MockTransaction) ZRemRangeByRank(ctx context.Context, key string, start, stop int64) (int64, error) {
+	return t.parent.ZRemRangeByRank(ctx, key, start, stop)
+}
+
+func (t *MockTransaction) ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error) {
+	return t.parent.ZIncrBy(ctx, key, increment, member)
+}
+
+func (t *MockTransaction) ZPopMin(ctx context.Context, key string, count int64) ([]ZMember, error) {
+	return t.parent.ZPopMin(ctx, key, count)
+}
+
+func (t *MockTransaction) LRem(ctx context.Context, key string, count int64, element string) (int64, error) {
+	return t.parent.LRem(ctx, key, count, element)
+}
+
+func (t *MockTransaction) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
+	return t.parent.RPopLPush(ctx, source, destination)
+}
+
 func (t *MockTransaction) DBSize(ctx context.Context) (int64, error) {
 	return t.parent.DBSize(ctx)
 }

@@ -1288,6 +1288,382 @@ func (h *Handler) zcardOp(ctx context.Context, ops storage.Operations, args []re
 	return resp.Int(count)
 }
 
+func (h *Handler) zrangebyscoreOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 3 {
+		return resp.ErrWrongArgs("zrangebyscore")
+	}
+
+	key := args[0].Bulk
+	minStr := args[1].Bulk
+	maxStr := args[2].Bulk
+
+	// Parse min score
+	var min float64
+	if minStr == "-inf" {
+		min = -1e308
+	} else if minStr == "+inf" || minStr == "inf" {
+		min = 1e308
+	} else {
+		// Handle exclusive bounds (e.g., "(1.5")
+		exclusive := strings.HasPrefix(minStr, "(")
+		if exclusive {
+			minStr = minStr[1:]
+		}
+		var err error
+		min, err = strconv.ParseFloat(minStr, 64)
+		if err != nil {
+			return resp.Err("ERR min value is not a float")
+		}
+		if exclusive {
+			min += 1e-9 // Approximate exclusivity
+		}
+	}
+
+	// Parse max score
+	var max float64
+	if maxStr == "+inf" || maxStr == "inf" {
+		max = 1e308
+	} else if maxStr == "-inf" {
+		max = -1e308
+	} else {
+		exclusive := strings.HasPrefix(maxStr, "(")
+		if exclusive {
+			maxStr = maxStr[1:]
+		}
+		var err error
+		max, err = strconv.ParseFloat(maxStr, 64)
+		if err != nil {
+			return resp.Err("ERR max value is not a float")
+		}
+		if exclusive {
+			max -= 1e-9
+		}
+	}
+
+	// Parse optional arguments
+	withScores := false
+	var offset, count int64 = 0, -1
+
+	for i := 3; i < len(args); i++ {
+		opt := strings.ToUpper(args[i].Bulk)
+		switch opt {
+		case "WITHSCORES":
+			withScores = true
+		case "LIMIT":
+			if i+2 >= len(args) {
+				return resp.ErrWrongArgs("zrangebyscore")
+			}
+			var err error
+			offset, err = strconv.ParseInt(args[i+1].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+			count, err = strconv.ParseInt(args[i+2].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+			i += 2
+		}
+	}
+
+	members, err := ops.ZRangeByScore(ctx, key, min, max, withScores, offset, count)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	if withScores {
+		result := make([]resp.Value, 0, len(members)*2)
+		for _, m := range members {
+			result = append(result, resp.Bulk(m.Member))
+			result = append(result, resp.Bulk(strconv.FormatFloat(m.Score, 'f', -1, 64)))
+		}
+		return resp.Arr(result...)
+	}
+
+	result := make([]resp.Value, len(members))
+	for i, m := range members {
+		result[i] = resp.Bulk(m.Member)
+	}
+	return resp.Arr(result...)
+}
+
+func (h *Handler) zremrangebyscoreOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("zremrangebyscore")
+	}
+
+	key := args[0].Bulk
+	minStr := args[1].Bulk
+	maxStr := args[2].Bulk
+
+	// Parse min score
+	var min float64
+	if minStr == "-inf" {
+		min = -1e308
+	} else if minStr == "+inf" || minStr == "inf" {
+		min = 1e308
+	} else {
+		exclusive := strings.HasPrefix(minStr, "(")
+		if exclusive {
+			minStr = minStr[1:]
+		}
+		var err error
+		min, err = strconv.ParseFloat(minStr, 64)
+		if err != nil {
+			return resp.Err("ERR min value is not a float")
+		}
+		if exclusive {
+			min += 1e-9
+		}
+	}
+
+	// Parse max score
+	var max float64
+	if maxStr == "+inf" || maxStr == "inf" {
+		max = 1e308
+	} else if maxStr == "-inf" {
+		max = -1e308
+	} else {
+		exclusive := strings.HasPrefix(maxStr, "(")
+		if exclusive {
+			maxStr = maxStr[1:]
+		}
+		var err error
+		max, err = strconv.ParseFloat(maxStr, 64)
+		if err != nil {
+			return resp.Err("ERR max value is not a float")
+		}
+		if exclusive {
+			max -= 1e-9
+		}
+	}
+
+	removed, err := ops.ZRemRangeByScore(ctx, key, min, max)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(removed)
+}
+
+func (h *Handler) zremrangebyrankOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("zremrangebyrank")
+	}
+
+	key := args[0].Bulk
+	start, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+	stop, err := strconv.ParseInt(args[2].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+
+	removed, err := ops.ZRemRangeByRank(ctx, key, start, stop)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(removed)
+}
+
+func (h *Handler) zincrbyOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("zincrby")
+	}
+
+	key := args[0].Bulk
+	increment, err := strconv.ParseFloat(args[1].Bulk, 64)
+	if err != nil {
+		return resp.Err("ERR value is not a valid float")
+	}
+	member := args[2].Bulk
+
+	newScore, err := ops.ZIncrBy(ctx, key, increment, member)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Bulk(strconv.FormatFloat(newScore, 'f', -1, 64))
+}
+
+func (h *Handler) zpopminOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("zpopmin")
+	}
+
+	key := args[0].Bulk
+	count := int64(1)
+
+	if len(args) > 1 {
+		var err error
+		count, err = strconv.ParseInt(args[1].Bulk, 10, 64)
+		if err != nil || count < 0 {
+			return resp.Err("ERR value is not an integer or out of range")
+		}
+	}
+
+	members, err := ops.ZPopMin(ctx, key, count)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	if len(members) == 0 {
+		return resp.Arr()
+	}
+
+	result := make([]resp.Value, 0, len(members)*2)
+	for _, m := range members {
+		result = append(result, resp.Bulk(m.Member))
+		result = append(result, resp.Bulk(strconv.FormatFloat(m.Score, 'f', -1, 64)))
+	}
+	return resp.Arr(result...)
+}
+
+func (h *Handler) lremOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("lrem")
+	}
+
+	key := args[0].Bulk
+	count, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+	element := args[2].Bulk
+
+	removed, err := ops.LRem(ctx, key, count, element)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(removed)
+}
+
+func (h *Handler) rpoplpushOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 2 {
+		return resp.ErrWrongArgs("rpoplpush")
+	}
+
+	source := args[0].Bulk
+	destination := args[1].Bulk
+
+	value, found, err := ops.RPopLPush(ctx, source, destination)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	if !found {
+		return resp.NullBulk()
+	}
+	return resp.Bulk(value)
+}
+
+func (h *Handler) sscanOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("sscan")
+	}
+
+	key := args[0].Bulk
+	cursor, err := strconv.ParseUint(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR invalid cursor")
+	}
+
+	// Parse options
+	pattern := "*"
+	count := int64(10)
+
+	for i := 2; i < len(args); i++ {
+		opt := strings.ToUpper(args[i].Bulk)
+		switch opt {
+		case "MATCH":
+			if i+1 >= len(args) {
+				return resp.ErrWrongArgs("sscan")
+			}
+			pattern = args[i+1].Bulk
+			i++
+		case "COUNT":
+			if i+1 >= len(args) {
+				return resp.ErrWrongArgs("sscan")
+			}
+			count, err = strconv.ParseInt(args[i+1].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+			i++
+		}
+	}
+
+	// Get all members
+	allMembers, err := ops.SMembers(ctx, key)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	// Filter by pattern
+	var filteredMembers []string
+	for _, member := range allMembers {
+		matched, _ := matchGlob(pattern, member)
+		if matched {
+			filteredMembers = append(filteredMembers, member)
+		}
+	}
+
+	// Simulate cursor-based pagination
+	start := int(cursor)
+	if start >= len(filteredMembers) {
+		return resp.Arr(resp.Bulk("0"), resp.Arr())
+	}
+
+	end := start + int(count)
+	if end > len(filteredMembers) {
+		end = len(filteredMembers)
+	}
+
+	resultMembers := filteredMembers[start:end]
+
+	var nextCursor string
+	if end >= len(filteredMembers) {
+		nextCursor = "0"
+	} else {
+		nextCursor = strconv.Itoa(end)
+	}
+
+	memberValues := make([]resp.Value, len(resultMembers))
+	for i, member := range resultMembers {
+		memberValues[i] = resp.Bulk(member)
+	}
+
+	return resp.Arr(resp.Bulk(nextCursor), resp.Arr(memberValues...))
+}
+
+func (h *Handler) unlinkOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	// UNLINK is like DEL but async - we just implement it as DEL
+	return h.delOp(ctx, ops, args)
+}
+
 // ============== Server Commands ==============
 
 func (h *Handler) infoOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
@@ -1417,6 +1793,10 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.lrangeOp(ctx, ops, args)
 	case "LINDEX":
 		return h.lindexOp(ctx, ops, args)
+	case "LREM":
+		return h.lremOp(ctx, ops, args)
+	case "RPOPLPUSH":
+		return h.rpoplpushOp(ctx, ops, args)
 
 	// Key scan commands
 	case "SCAN":
@@ -1433,18 +1813,34 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.sismemberOp(ctx, ops, args)
 	case "SCARD":
 		return h.scardOp(ctx, ops, args)
+	case "SSCAN":
+		return h.sscanOp(ctx, ops, args)
+
+	// Key commands (additional)
+	case "UNLINK":
+		return h.unlinkOp(ctx, ops, args)
 
 	// Sorted set commands
 	case "ZADD":
 		return h.zaddOp(ctx, ops, args)
 	case "ZRANGE":
 		return h.zrangeOp(ctx, ops, args)
+	case "ZRANGEBYSCORE":
+		return h.zrangebyscoreOp(ctx, ops, args)
 	case "ZSCORE":
 		return h.zscoreOp(ctx, ops, args)
 	case "ZREM":
 		return h.zremOp(ctx, ops, args)
+	case "ZREMRANGEBYSCORE":
+		return h.zremrangebyscoreOp(ctx, ops, args)
+	case "ZREMRANGEBYRANK":
+		return h.zremrangebyrankOp(ctx, ops, args)
 	case "ZCARD":
 		return h.zcardOp(ctx, ops, args)
+	case "ZINCRBY":
+		return h.zincrbyOp(ctx, ops, args)
+	case "ZPOPMIN":
+		return h.zpopminOp(ctx, ops, args)
 
 	// Server commands
 	case "INFO":

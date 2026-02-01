@@ -64,6 +64,8 @@ type Operations interface {
 	LLen(ctx context.Context, key string) (int64, error)
 	LRange(ctx context.Context, key string, start, stop int64) ([]string, error)
 	LIndex(ctx context.Context, key string, index int64) (string, bool, error)
+	LRem(ctx context.Context, key string, count int64, element string) (int64, error)
+	RPopLPush(ctx context.Context, source, destination string) (string, bool, error)
 
 	// Set commands
 	SAdd(ctx context.Context, key string, members []string) (int64, error)
@@ -75,9 +77,14 @@ type Operations interface {
 	// Sorted set commands
 	ZAdd(ctx context.Context, key string, members []ZMember) (int64, error)
 	ZRange(ctx context.Context, key string, start, stop int64, withScores bool) ([]ZMember, error)
+	ZRangeByScore(ctx context.Context, key string, min, max float64, withScores bool, offset, count int64) ([]ZMember, error)
 	ZScore(ctx context.Context, key, member string) (float64, bool, error)
 	ZRem(ctx context.Context, key string, members []string) (int64, error)
+	ZRemRangeByScore(ctx context.Context, key string, min, max float64) (int64, error)
+	ZRemRangeByRank(ctx context.Context, key string, start, stop int64) (int64, error)
 	ZCard(ctx context.Context, key string) (int64, error)
+	ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error)
+	ZPopMin(ctx context.Context, key string, count int64) ([]ZMember, error)
 
 	// Server commands
 	DBSize(ctx context.Context) (int64, error)
