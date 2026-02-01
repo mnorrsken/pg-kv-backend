@@ -2786,6 +2786,184 @@ func TestHScanWithPattern(t *testing.T) {
 	}
 }
 
+// ============== BRPOP/BLPOP Command Tests ==============
+
+func TestBRPop(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Push some values first
+	ts.client.RPush(ctx, "mylist", "one", "two", "three")
+
+	// BRPOP should pop from the right
+	result, err := ts.client.BRPop(ctx, 1*time.Second, "mylist").Result()
+	if err != nil {
+		t.Fatalf("BRPOP failed: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("Expected 2 elements, got %d", len(result))
+	}
+	if result[0] != "mylist" {
+		t.Errorf("Expected key 'mylist', got '%s'", result[0])
+	}
+	if result[1] != "three" {
+		t.Errorf("Expected 'three', got '%s'", result[1])
+	}
+}
+
+func TestBLPop(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Push some values first
+	ts.client.RPush(ctx, "mylist", "one", "two", "three")
+
+	// BLPOP should pop from the left
+	result, err := ts.client.BLPop(ctx, 1*time.Second, "mylist").Result()
+	if err != nil {
+		t.Fatalf("BLPOP failed: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("Expected 2 elements, got %d", len(result))
+	}
+	if result[0] != "mylist" {
+		t.Errorf("Expected key 'mylist', got '%s'", result[0])
+	}
+	if result[1] != "one" {
+		t.Errorf("Expected 'one', got '%s'", result[1])
+	}
+}
+
+func TestBRPopTimeout(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// BRPOP on empty list should timeout
+	start := time.Now()
+	_, err := ts.client.BRPop(ctx, 200*time.Millisecond, "emptylist").Result()
+	elapsed := time.Since(start)
+
+	if err != redis.Nil {
+		t.Errorf("Expected redis.Nil for timeout, got %v", err)
+	}
+
+	// Should have waited at least 200ms but not too long
+	if elapsed < 150*time.Millisecond {
+		t.Errorf("Timeout returned too quickly: %v", elapsed)
+	}
+}
+
+func TestBRPopMultipleKeys(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Only push to second list
+	ts.client.RPush(ctx, "list2", "value2")
+
+	// BRPOP should check list1 first (empty), then list2
+	result, err := ts.client.BRPop(ctx, 1*time.Second, "list1", "list2").Result()
+	if err != nil {
+		t.Fatalf("BRPOP failed: %v", err)
+	}
+	if result[0] != "list2" {
+		t.Errorf("Expected key 'list2', got '%s'", result[0])
+	}
+	if result[1] != "value2" {
+		t.Errorf("Expected 'value2', got '%s'", result[1])
+	}
+}
+
+// ============== SCAN Command Tests ==============
+
+func TestScan(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add some keys
+	ts.client.Set(ctx, "key1", "value1", 0)
+	ts.client.Set(ctx, "key2", "value2", 0)
+	ts.client.Set(ctx, "key3", "value3", 0)
+
+	// Scan all keys
+	var allKeys []string
+	cursor := uint64(0)
+	for {
+		keys, nextCursor, err := ts.client.Scan(ctx, cursor, "*", 10).Result()
+		if err != nil {
+			t.Fatalf("SCAN failed: %v", err)
+		}
+		allKeys = append(allKeys, keys...)
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	if len(allKeys) != 3 {
+		t.Errorf("Expected 3 keys, got %d: %v", len(allKeys), allKeys)
+	}
+}
+
+func TestScanWithMatch(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add keys with different prefixes
+	ts.client.Set(ctx, "user:1", "alice", 0)
+	ts.client.Set(ctx, "user:2", "bob", 0)
+	ts.client.Set(ctx, "email:1", "alice@example.com", 0)
+
+	// Scan only user keys
+	keys, _, err := ts.client.Scan(ctx, 0, "user:*", 10).Result()
+	if err != nil {
+		t.Fatalf("SCAN with MATCH failed: %v", err)
+	}
+
+	if len(keys) != 2 {
+		t.Errorf("Expected 2 keys, got %d: %v", len(keys), keys)
+	}
+}
+
+func TestScanWithCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add many keys
+	for i := 0; i < 20; i++ {
+		ts.client.Set(ctx, fmt.Sprintf("key%d", i), "value", 0)
+	}
+
+	// Scan with small count (pagination)
+	keys, cursor, err := ts.client.Scan(ctx, 0, "*", 5).Result()
+	if err != nil {
+		t.Fatalf("SCAN failed: %v", err)
+	}
+
+	// Should get approximately COUNT keys (may vary)
+	if len(keys) == 0 {
+		t.Error("Expected some keys in first scan")
+	}
+
+	// Cursor should not be 0 if there are more keys
+	if cursor == 0 && len(keys) < 20 {
+		t.Error("Expected non-zero cursor for more keys")
+	}
+}
+
 // ============== WATCH/UNWATCH Command Tests ==============
 
 func TestWatch(t *testing.T) {

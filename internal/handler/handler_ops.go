@@ -856,6 +856,216 @@ func (h *Handler) lindexOp(ctx context.Context, ops storage.Operations, args []r
 	return resp.Bulk(value)
 }
 
+// brpopOp implements BRPOP - blocking right pop from list(s)
+// BRPOP key [key ...] timeout
+func (h *Handler) brpopOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("brpop")
+	}
+
+	// Last arg is timeout in seconds
+	timeout, err := strconv.ParseFloat(args[len(args)-1].Bulk, 64)
+	if err != nil {
+		return resp.Err("timeout is not a float or out of range")
+	}
+
+	keys := make([]string, len(args)-1)
+	for i := 0; i < len(args)-1; i++ {
+		keys[i] = args[i].Bulk
+	}
+
+	// Calculate deadline
+	var deadline time.Time
+	if timeout > 0 {
+		deadline = time.Now().Add(time.Duration(timeout * float64(time.Second)))
+	}
+
+	// Poll interval - short for responsiveness
+	pollInterval := 100 * time.Millisecond
+
+	for {
+		// Try each key in order
+		for _, key := range keys {
+			value, found, err := ops.RPop(ctx, key)
+			if err != nil {
+				return resp.Err(err.Error())
+			}
+			if found {
+				// Return [key, value] as array
+				return resp.Arr(resp.Bulk(key), resp.Bulk(value))
+			}
+		}
+
+		// Check if timeout expired (0 means block forever)
+		if timeout > 0 && time.Now().After(deadline) {
+			return resp.NullBulk()
+		}
+
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return resp.NullBulk()
+		case <-time.After(pollInterval):
+			// Continue polling
+		}
+	}
+}
+
+// blpopOp implements BLPOP - blocking left pop from list(s)
+// BLPOP key [key ...] timeout
+func (h *Handler) blpopOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("blpop")
+	}
+
+	// Last arg is timeout in seconds
+	timeout, err := strconv.ParseFloat(args[len(args)-1].Bulk, 64)
+	if err != nil {
+		return resp.Err("timeout is not a float or out of range")
+	}
+
+	keys := make([]string, len(args)-1)
+	for i := 0; i < len(args)-1; i++ {
+		keys[i] = args[i].Bulk
+	}
+
+	// Calculate deadline
+	var deadline time.Time
+	if timeout > 0 {
+		deadline = time.Now().Add(time.Duration(timeout * float64(time.Second)))
+	}
+
+	// Poll interval - short for responsiveness
+	pollInterval := 100 * time.Millisecond
+
+	for {
+		// Try each key in order
+		for _, key := range keys {
+			value, found, err := ops.LPop(ctx, key)
+			if err != nil {
+				return resp.Err(err.Error())
+			}
+			if found {
+				// Return [key, value] as array
+				return resp.Arr(resp.Bulk(key), resp.Bulk(value))
+			}
+		}
+
+		// Check if timeout expired (0 means block forever)
+		if timeout > 0 && time.Now().After(deadline) {
+			return resp.NullBulk()
+		}
+
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return resp.NullBulk()
+		case <-time.After(pollInterval):
+			// Continue polling
+		}
+	}
+}
+
+// ============== Key Scan Commands ==============
+
+// scanOp implements SCAN - incrementally iterate over keys
+// SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]
+func (h *Handler) scanOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("scan")
+	}
+
+	cursor, err := strconv.ParseInt(args[0].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("invalid cursor")
+	}
+
+	// Parse optional arguments
+	pattern := "*"
+	count := int64(10)
+	var typeFilter string
+
+	for i := 1; i < len(args); i++ {
+		opt := strings.ToUpper(args[i].Bulk)
+		switch opt {
+		case "MATCH":
+			if i+1 >= len(args) {
+				return resp.Err("syntax error")
+			}
+			i++
+			pattern = args[i].Bulk
+		case "COUNT":
+			if i+1 >= len(args) {
+				return resp.Err("syntax error")
+			}
+			i++
+			count, err = strconv.ParseInt(args[i].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("value is not an integer or out of range")
+			}
+		case "TYPE":
+			if i+1 >= len(args) {
+				return resp.Err("syntax error")
+			}
+			i++
+			typeFilter = strings.ToLower(args[i].Bulk)
+		}
+	}
+
+	// Get all matching keys
+	allKeys, err := ops.Keys(ctx, pattern)
+	if err != nil {
+		return resp.Err(err.Error())
+	}
+
+	// Filter by type if specified
+	var filteredKeys []string
+	if typeFilter != "" {
+		for _, key := range allKeys {
+			keyType, err := ops.Type(ctx, key)
+			if err != nil {
+				continue
+			}
+			if string(keyType) == typeFilter {
+				filteredKeys = append(filteredKeys, key)
+			}
+		}
+	} else {
+		filteredKeys = allKeys
+	}
+
+	// Simulate cursor-based pagination
+	// cursor is the start index, we return up to 'count' keys
+	start := int(cursor)
+	if start >= len(filteredKeys) {
+		// No more keys, return cursor 0 (end of iteration)
+		return resp.Arr(resp.Bulk("0"), resp.Arr())
+	}
+
+	end := start + int(count)
+	if end > len(filteredKeys) {
+		end = len(filteredKeys)
+	}
+
+	resultKeys := filteredKeys[start:end]
+
+	// Calculate next cursor
+	var nextCursor string
+	if end >= len(filteredKeys) {
+		nextCursor = "0" // End of iteration
+	} else {
+		nextCursor = strconv.Itoa(end)
+	}
+
+	// Build result array
+	keyValues := make([]resp.Value, len(resultKeys))
+	for i, key := range resultKeys {
+		keyValues[i] = resp.Bulk(key)
+	}
+
+	return resp.Arr(resp.Bulk(nextCursor), resp.Arr(keyValues...))
+}
+
 // ============== Set Commands ==============
 
 func (h *Handler) saddOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
@@ -1197,12 +1407,20 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.lpopOp(ctx, ops, args)
 	case "RPOP":
 		return h.rpopOp(ctx, ops, args)
+	case "BLPOP":
+		return h.blpopOp(ctx, ops, args)
+	case "BRPOP":
+		return h.brpopOp(ctx, ops, args)
 	case "LLEN":
 		return h.llenOp(ctx, ops, args)
 	case "LRANGE":
 		return h.lrangeOp(ctx, ops, args)
 	case "LINDEX":
 		return h.lindexOp(ctx, ops, args)
+
+	// Key scan commands
+	case "SCAN":
+		return h.scanOp(ctx, ops, args)
 
 	// Set commands
 	case "SADD":
