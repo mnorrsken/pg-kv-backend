@@ -10,6 +10,14 @@ All notable changes to this project will be documented in this file.
   - Heap profile: `/debug/pprof/heap`
   - Goroutine dump: `/debug/pprof/goroutine`
   - Mutex/block profiling available
+- **LISTEN/NOTIFY for BRPOP/BLPOP** - Eliminates polling when waiting for list items
+  - LPUSH/RPUSH now send PostgreSQL notifications
+  - BRPOP/BLPOP wait for notifications instead of polling every 100ms
+  - Dramatically reduces CPU and database load for blocking list operations
+
+### Fixed
+- **High CPU usage** caused by aggressive 10ms polling in BRPOP/BLPOP
+  - Reduced poll interval as fallback, but now uses LISTEN/NOTIFY for near-instant wakeup
 
 ## [0.10] - 2026-02-01
 

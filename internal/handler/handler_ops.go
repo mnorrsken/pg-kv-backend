@@ -1096,6 +1096,12 @@ func (h *Handler) lpushOp(ctx context.Context, ops storage.Operations, args []re
 		}
 		return resp.Err(err.Error())
 	}
+
+	// Notify any BRPOP/BLPOP waiters
+	if h.listNotifier != nil {
+		h.listNotifier.NotifyPush(ctx, key)
+	}
+
 	return resp.Int(length)
 }
 
@@ -1117,6 +1123,12 @@ func (h *Handler) rpushOp(ctx context.Context, ops storage.Operations, args []re
 		}
 		return resp.Err(err.Error())
 	}
+
+	// Notify any BRPOP/BLPOP waiters
+	if h.listNotifier != nil {
+		h.listNotifier.NotifyPush(ctx, key)
+	}
+
 	return resp.Int(length)
 }
 
@@ -1227,14 +1239,11 @@ func (h *Handler) brpopOp(ctx context.Context, ops storage.Operations, args []re
 		keys[i] = args[i].Bulk
 	}
 
-	// Calculate deadline
+	// Calculate deadline and remaining time
 	var deadline time.Time
 	if timeout > 0 {
 		deadline = time.Now().Add(time.Duration(timeout * float64(time.Second)))
 	}
-
-	// Poll interval - use short interval for low latency
-	pollInterval := 10 * time.Millisecond
 
 	for {
 		// Try each key in order
@@ -1244,7 +1253,6 @@ func (h *Handler) brpopOp(ctx context.Context, ops storage.Operations, args []re
 				return resp.Err(err.Error())
 			}
 			if found {
-				// Return [key, value] as array
 				return resp.Arr(resp.Bulk(key), resp.Bulk(value))
 			}
 		}
@@ -1254,12 +1262,36 @@ func (h *Handler) brpopOp(ctx context.Context, ops storage.Operations, args []re
 			return resp.NullBulk()
 		}
 
-		// Check context cancellation
+		// Calculate wait time
+		waitTime := 100 * time.Millisecond // fallback poll interval
+		if timeout > 0 {
+			remaining := time.Until(deadline)
+			if remaining < waitTime {
+				waitTime = remaining
+			}
+		}
+
+		// Use LISTEN/NOTIFY if available, otherwise fall back to polling
+		if h.listNotifier != nil {
+			// Wait for notification on any of the keys
+			// We use first key for simplicity - a more complete impl would wait on all
+			if h.listNotifier.WaitForKey(ctx, keys[0], waitTime) {
+				continue // Got notification, try to pop again
+			}
+		} else {
+			// Fallback: poll-based waiting
+			select {
+			case <-ctx.Done():
+				return resp.NullBulk()
+			case <-time.After(waitTime):
+			}
+		}
+
+		// Check context and timeout after waiting
 		select {
 		case <-ctx.Done():
 			return resp.NullBulk()
-		case <-time.After(pollInterval):
-			// Continue polling
+		default:
 		}
 	}
 }
@@ -1282,14 +1314,11 @@ func (h *Handler) blpopOp(ctx context.Context, ops storage.Operations, args []re
 		keys[i] = args[i].Bulk
 	}
 
-	// Calculate deadline
+	// Calculate deadline and remaining time
 	var deadline time.Time
 	if timeout > 0 {
 		deadline = time.Now().Add(time.Duration(timeout * float64(time.Second)))
 	}
-
-	// Poll interval - use short interval for low latency
-	pollInterval := 10 * time.Millisecond
 
 	for {
 		// Try each key in order
@@ -1299,7 +1328,6 @@ func (h *Handler) blpopOp(ctx context.Context, ops storage.Operations, args []re
 				return resp.Err(err.Error())
 			}
 			if found {
-				// Return [key, value] as array
 				return resp.Arr(resp.Bulk(key), resp.Bulk(value))
 			}
 		}
@@ -1309,12 +1337,35 @@ func (h *Handler) blpopOp(ctx context.Context, ops storage.Operations, args []re
 			return resp.NullBulk()
 		}
 
-		// Check context cancellation
+		// Calculate wait time
+		waitTime := 100 * time.Millisecond // fallback poll interval
+		if timeout > 0 {
+			remaining := time.Until(deadline)
+			if remaining < waitTime {
+				waitTime = remaining
+			}
+		}
+
+		// Use LISTEN/NOTIFY if available, otherwise fall back to polling
+		if h.listNotifier != nil {
+			// Wait for notification on any of the keys
+			if h.listNotifier.WaitForKey(ctx, keys[0], waitTime) {
+				continue // Got notification, try to pop again
+			}
+		} else {
+			// Fallback: poll-based waiting
+			select {
+			case <-ctx.Done():
+				return resp.NullBulk()
+			case <-time.After(waitTime):
+			}
+		}
+
+		// Check context and timeout after waiting
 		select {
 		case <-ctx.Done():
 			return resp.NullBulk()
-		case <-time.After(pollInterval):
-			// Continue polling
+		default:
 		}
 	}
 }

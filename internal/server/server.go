@@ -138,7 +138,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	writer := resp.NewWriter(conn)
 
 	// Create client state for this connection
-	client := NewClientState(conn)
+	client := NewClientState(conn, s.debug)
 	client.SetWriter(writer)
 
 	// Clean up subscriptions when connection closes

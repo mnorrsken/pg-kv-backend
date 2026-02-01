@@ -18,6 +18,7 @@ Thumbs.db
 
 # Test
 coverage.out
+*.prof
 *.test
 
 # Environment

@@ -11,6 +11,7 @@ import (
 	"github.com/mnorrsken/postkeys/internal/cache"
 	"github.com/mnorrsken/postkeys/internal/config"
 	"github.com/mnorrsken/postkeys/internal/handler"
+	"github.com/mnorrsken/postkeys/internal/listnotify"
 	"github.com/mnorrsken/postkeys/internal/metrics"
 	"github.com/mnorrsken/postkeys/internal/pubsub"
 	"github.com/mnorrsken/postkeys/internal/server"
@@ -61,6 +62,15 @@ func main() {
 
 	// Create handler
 	h := handler.New(backend, cfg.RedisPassword)
+
+	// Initialize list notifier for BRPOP/BLPOP
+	listNotifier := listnotify.New(store.Pool(), store.ConnString())
+	listNotifier.SetDebug(cfg.Debug)
+	if err := listNotifier.Start(ctx); err != nil {
+		log.Fatalf("Failed to start list notifier: %v", err)
+	}
+	h.SetListNotifier(listNotifier)
+	log.Println("List notification support enabled (BRPOP/BLPOP)")
 
 	// Create and start server
 	srv := server.NewWithOptions(cfg.RedisAddr, h, cfg.Debug, cfg.TraceLevel)

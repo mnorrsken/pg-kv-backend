@@ -56,11 +56,18 @@ type TransactionClientState interface {
 	QueueLength() int
 }
 
+// ListNotifier interface for notifying about list push operations
+type ListNotifier interface {
+	NotifyPush(ctx context.Context, key string) error
+	WaitForKey(ctx context.Context, key string, timeout time.Duration) bool
+}
+
 // Handler processes Redis commands
 type Handler struct {
-	store     storage.Backend
-	password  string
-	startTime time.Time
+	store        storage.Backend
+	password     string
+	startTime    time.Time
+	listNotifier ListNotifier
 }
 
 // New creates a new command handler
@@ -70,6 +77,11 @@ func New(store storage.Backend, password string) *Handler {
 		password:  password,
 		startTime: time.Now(),
 	}
+}
+
+// SetListNotifier sets the list notifier for BRPOP/BLPOP
+func (h *Handler) SetListNotifier(n ListNotifier) {
+	h.listNotifier = n
 }
 
 // RequiresAuth returns true if a password is configured

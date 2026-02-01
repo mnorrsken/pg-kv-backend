@@ -23,6 +23,7 @@ type ClientState struct {
 	LibName     string
 	LibVersion  string
 	mu          sync.RWMutex
+	debug       bool
 	
 	// Protocol version (2 or 3, defaults to 2 for RESP2)
 	protocolVersion int
@@ -38,15 +39,18 @@ type ClientState struct {
 }
 
 // NewClientState creates a new client state for a connection
-func NewClientState(conn net.Conn) *ClientState {
+func NewClientState(conn net.Conn, debug bool) *ClientState {
 	id := atomic.AddUint64(&clientIDCounter, 1)
 	addr := conn.RemoteAddr().String()
-	log.Printf("[DEBUG] New client %d created from %s", id, addr)
+	if debug {
+		log.Printf("[DEBUG] New client %d created from %s", id, addr)
+	}
 	return &ClientState{
 		ID:              id,
 		Addr:            addr,
 		CreatedAt:       time.Now(),
 		protocolVersion: 2, // Default to RESP2
+		debug:           debug,
 	}
 }
 
@@ -190,9 +194,6 @@ func (c *ClientState) SetWriter(w *resp.Writer) {
 func (c *ClientState) EnterPubSubMode() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.inPubSubMode {
-		log.Printf("[DEBUG] Client %d (%s) entering pub/sub mode", c.ID, c.Addr)
-	}
 	c.inPubSubMode = true
 }
 
@@ -200,9 +201,6 @@ func (c *ClientState) EnterPubSubMode() {
 func (c *ClientState) ExitPubSubMode() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.inPubSubMode {
-		log.Printf("[DEBUG] Client %d (%s) exiting pub/sub mode", c.ID, c.Addr)
-	}
 	c.inPubSubMode = false
 }
 
