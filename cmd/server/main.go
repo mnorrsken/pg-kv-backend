@@ -31,6 +31,7 @@ func main() {
 		Password: cfg.PGPassword,
 		Database: cfg.PGDatabase,
 		SSLMode:  cfg.PGSSLMode,
+		SQLTrace: cfg.SQLTrace,
 	})
 	if err != nil {
 		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
@@ -59,7 +60,7 @@ func main() {
 	h := handler.New(backend, cfg.RedisPassword)
 
 	// Create and start server
-	srv := server.NewWithDebug(cfg.RedisAddr, h, cfg.Debug)
+	srv := server.NewWithOptions(cfg.RedisAddr, h, cfg.Debug, cfg.Trace)
 
 	// Initialize pub/sub hub
 	hub := pubsub.NewHub(store.Pool(), store.ConnString())
@@ -75,6 +76,12 @@ func main() {
 
 	if cfg.Debug {
 		log.Println("Debug logging is enabled (DEBUG=1)")
+	}
+	if cfg.SQLTrace {
+		log.Println("SQL query tracing is enabled (SQLTRACE=true)")
+	}
+	if cfg.Trace {
+		log.Println("RESP command tracing is enabled (TRACE=true)")
 	}
 	if cfg.RedisPassword != "" {
 		log.Println("Authentication is enabled")

@@ -174,6 +174,8 @@ func (h *Handler) executeCommand(ctx context.Context, cmdName string, args []res
 		return h.hello(args)
 	case "COMMAND":
 		return h.command(args)
+	case "CLUSTER":
+		return h.cluster(args)
 
 	// Transaction commands (handled specially in HandleTransaction)
 	case "MULTI", "EXEC", "DISCARD":
@@ -354,6 +356,34 @@ func (h *Handler) command(args []resp.Value) resp.Value {
 		return resp.Arr()
 	}
 	return resp.Arr()
+}
+
+// cluster handles CLUSTER commands - this is a standalone server, not a cluster
+func (h *Handler) cluster(args []resp.Value) resp.Value {
+	if len(args) == 0 {
+		return resp.ErrWrongArgs("cluster")
+	}
+
+	subCmd := strings.ToUpper(args[0].Bulk)
+	switch subCmd {
+	case "INFO":
+		// Return cluster info indicating cluster mode is disabled
+		return resp.Bulk("cluster_state:fail\r\ncluster_slots_assigned:0\r\ncluster_slots_ok:0\r\ncluster_slots_pfail:0\r\ncluster_slots_fail:0\r\ncluster_known_nodes:1\r\ncluster_size:0\r\ncluster_current_epoch:0\r\ncluster_my_epoch:0\r\ncluster_stats_messages_sent:0\r\ncluster_stats_messages_received:0\r\ncluster_stats_messages_ping_sent:0\r\ncluster_stats_messages_pong_sent:0\r\ncluster_stats_messages_meet_sent:0\r\ncluster_stats_messages_ping_received:0\r\ncluster_stats_messages_pong_received:0\r\ncluster_stats_messages_meet_received:0")
+	case "SLOTS":
+		// Return empty array - no cluster slots configured
+		return resp.Arr()
+	case "NODES":
+		// Return empty response - no cluster nodes
+		return resp.Bulk("")
+	case "MYID":
+		// Return a placeholder node ID
+		return resp.Bulk("0000000000000000000000000000000000000000")
+	case "KEYSLOT":
+		// Return slot 0 for any key (not actually used in standalone mode)
+		return resp.Int(0)
+	default:
+		return resp.Err(fmt.Sprintf("ERR Unknown subcommand or wrong number of arguments for '%s'", subCmd))
+	}
 }
 
 func (h *Handler) hello(args []resp.Value) resp.Value {

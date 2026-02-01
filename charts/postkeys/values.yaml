@@ -71,6 +71,14 @@ affinity: {}
 # Enable debug logging (sets DEBUG=1)
 debug: false
 
+# Enable SQL query tracing (sets SQLTRACE=true)
+# WARNING: This outputs all SQL queries to logs - use only for debugging
+sqlTrace: false
+
+# Enable RESP command tracing (sets TRACE=true)
+# WARNING: This outputs all Redis commands to logs - use only for debugging
+trace: false
+
 # Redis server configuration
 redis:
   # Address to listen on (inside the container)

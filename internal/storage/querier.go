@@ -3,7 +3,9 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -42,6 +44,31 @@ func decodeField(field string) string {
 		}
 	}
 	return field
+}
+
+// keyspaceChannelPrefix is the prefix for keyspace notification channels
+const keyspaceChannelPrefix = "__keyspace@0__:"
+
+// maxPgChannelLen is the maximum length for PostgreSQL NOTIFY channel names (NAMEDATALEN - 1)
+const maxPgChannelLen = 63
+
+// keyspaceChannel creates a safe channel name for keyspace notifications.
+// PostgreSQL channel names are limited to 63 bytes. For long keys, we use
+// a hash suffix to ensure uniqueness while staying within the limit.
+func keyspaceChannel(key string) string {
+	channel := keyspaceChannelPrefix + key
+	if len(channel) <= maxPgChannelLen {
+		return channel
+	}
+
+	// For long keys, use: prefix + truncated key + hash suffix
+	// Hash suffix is 8 chars (short hex hash) + 1 for separator = 9 chars
+	// Available for key: 63 - 14 (prefix) - 9 (hash suffix) = 40 chars
+	hash := sha256.Sum256([]byte(key))
+	hashSuffix := ":" + hex.EncodeToString(hash[:4]) // 8 hex chars
+	maxKeyLen := maxPgChannelLen - len(keyspaceChannelPrefix) - len(hashSuffix)
+
+	return keyspaceChannelPrefix + key[:maxKeyLen] + hashSuffix
 }
 
 // queryOps provides the actual implementation of storage operations using a Querier.
@@ -893,7 +920,9 @@ func (o queryOps) hSet(ctx context.Context, q Querier, key string, fields map[st
 		if result.RowsAffected() > 0 {
 			// Check if this was a new field
 			var count int64
-			q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_hashes WHERE key = $1 AND field = $2", key, encField).Scan(&count)
+			if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_hashes WHERE key = $1 AND field = $2", key, encField).Scan(&count); err != nil {
+				return 0, fmt.Errorf("failed to check field count: %w", err)
+			}
 			if count == 1 {
 				added++
 			}
@@ -1118,7 +1147,9 @@ func (o queryOps) lPush(ctx context.Context, q Querier, key string, values []str
 
 	// Get current min index
 	var minIdx int64 = 0
-	_ = q.QueryRow(ctx, "SELECT COALESCE(MIN(idx), 0) FROM kv_lists WHERE key = $1", key).Scan(&minIdx)
+	if err := q.QueryRow(ctx, "SELECT COALESCE(MIN(idx), 0) FROM kv_lists WHERE key = $1", key).Scan(&minIdx); err != nil {
+		return 0, fmt.Errorf("failed to get min index: %w", err)
+	}
 
 	// Insert values at the beginning (in reverse order so first value ends up at head)
 	for i, value := range values {
@@ -1137,10 +1168,12 @@ func (o queryOps) lPush(ctx context.Context, q Querier, key string, values []str
 
 	// Return new length
 	var length int64
-	q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length)
+	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length); err != nil {
+		return 0, fmt.Errorf("failed to get list length: %w", err)
+	}
 
 	// Notify any waiting BLPOP/BRPOP clients
-	_, _ = q.Exec(ctx, "SELECT pg_notify('__keyspace@0__:' || $1, 'lpush')", key)
+	_, _ = q.Exec(ctx, "SELECT pg_notify($1, 'lpush')", keyspaceChannel(key))
 
 	return length, nil
 }
@@ -1162,7 +1195,9 @@ func (o queryOps) rPush(ctx context.Context, q Querier, key string, values []str
 
 	// Get current max index
 	var maxIdx int64 = -1
-	_ = q.QueryRow(ctx, "SELECT COALESCE(MAX(idx), -1) FROM kv_lists WHERE key = $1", key).Scan(&maxIdx)
+	if err := q.QueryRow(ctx, "SELECT COALESCE(MAX(idx), -1) FROM kv_lists WHERE key = $1", key).Scan(&maxIdx); err != nil {
+		return 0, fmt.Errorf("failed to get max index: %w", err)
+	}
 
 	// Insert values at the end
 	for i, value := range values {
@@ -1181,10 +1216,12 @@ func (o queryOps) rPush(ctx context.Context, q Querier, key string, values []str
 
 	// Return new length
 	var length int64
-	q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length)
+	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length); err != nil {
+		return 0, fmt.Errorf("failed to get list length: %w", err)
+	}
 
 	// Notify any waiting BLPOP/BRPOP clients
-	_, _ = q.Exec(ctx, "SELECT pg_notify('__keyspace@0__:' || $1, 'rpush')", key)
+	_, _ = q.Exec(ctx, "SELECT pg_notify($1, 'rpush')", keyspaceChannel(key))
 
 	return length, nil
 }
@@ -1251,7 +1288,9 @@ func (o queryOps) lLen(ctx context.Context, q Querier, key string) (int64, error
 func (o queryOps) lRange(ctx context.Context, q Querier, key string, start, stop int64) ([]string, error) {
 	// Get total count
 	var total int64
-	q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&total)
+	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&total); err != nil {
+		return nil, fmt.Errorf("failed to get list count: %w", err)
+	}
 
 	// Convert negative indices
 	if start < 0 {
@@ -1294,7 +1333,9 @@ func (o queryOps) lRange(ctx context.Context, q Querier, key string, start, stop
 func (o queryOps) lIndex(ctx context.Context, q Querier, key string, index int64) (string, bool, error) {
 	// Get total count
 	var total int64
-	q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&total)
+	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&total); err != nil {
+		return "", false, fmt.Errorf("failed to get list count: %w", err)
+	}
 
 	// Convert negative index
 	if index < 0 {

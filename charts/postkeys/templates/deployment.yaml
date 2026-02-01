@@ -125,6 +125,14 @@ spec:
             - name: DEBUG
               value: "1"
             {{- end }}
+            {{- if .Values.sqlTrace }}
+            - name: SQLTRACE
+              value: "true"
+            {{- end }}
+            {{- if .Values.trace }}
+            - name: TRACE
+              value: "true"
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

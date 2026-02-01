@@ -33,6 +33,12 @@ type Config struct {
 
 	// Debug mode
 	Debug bool
+
+	// SQLTrace enables logging of all SQL queries
+	SQLTrace bool
+
+	// Trace enables verbose logging of all RESP commands
+	Trace bool
 }
 
 // Load loads configuration from environment variables
@@ -51,6 +57,8 @@ func Load() *Config {
 		CacheTTL:      getEnvDuration("CACHE_TTL", 250*time.Millisecond),
 		CacheMaxSize:  getEnvInt("CACHE_MAX_SIZE", 10000),
 		Debug:         getEnv("DEBUG", "") == "1",
+		SQLTrace:      getEnvBool("SQLTRACE", false),
+		Trace:         getEnvBool("TRACE", false),
 	}
 }
 

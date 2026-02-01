@@ -9,6 +9,8 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mnorrsken/postkeys/internal/handler"
 	"github.com/mnorrsken/postkeys/internal/pubsub"
@@ -23,6 +25,7 @@ type Server struct {
 	quit     chan struct{}
 	wg       sync.WaitGroup
 	debug    bool
+	trace    bool
 	pubsub   *pubsub.Hub
 }
 
@@ -43,6 +46,17 @@ func NewWithDebug(addr string, h *handler.Handler, debug bool) *Server {
 		handler: h,
 		quit:    make(chan struct{}),
 		debug:   debug,
+	}
+}
+
+// NewWithOptions creates a new server with all options
+func NewWithOptions(addr string, h *handler.Handler, debug, trace bool) *Server {
+	return &Server{
+		addr:    addr,
+		handler: h,
+		quit:    make(chan struct{}),
+		debug:   debug,
+		trace:   trace,
 	}
 }
 
@@ -158,6 +172,9 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			}
 			return
 		}
+
+		// Trace incoming command
+		s.traceCommand(conn, cmd)
 
 		// Check authentication before processing commands
 		var response resp.Value
@@ -287,6 +304,15 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			log.Printf("[DEBUG] Error response to %s for %s: %s", conn.RemoteAddr(), cmdName, response.Str)
 		}
 
+		// Trace outgoing response(s)
+		if len(multiResponse) > 0 {
+			for _, r := range multiResponse {
+				s.traceResponse(conn, r)
+			}
+		} else {
+			s.traceResponse(conn, response)
+		}
+
 		// Write response(s) - pub/sub commands may have multiple responses
 		if len(multiResponse) > 0 {
 			for _, r := range multiResponse {
@@ -327,4 +353,83 @@ func extractBulkStrings(values []resp.Value) []string {
 		result[i] = v.Bulk
 	}
 	return result
+}
+
+// formatRESPValue formats a RESP value for trace logging, detecting binary data
+func formatRESPValue(v resp.Value) string {
+	switch v.Type {
+	case resp.Array:
+		parts := make([]string, len(v.Array))
+		for i, elem := range v.Array {
+			parts[i] = formatRESPValue(elem)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	case resp.BulkString:
+		return formatTraceString(v.Bulk)
+	case resp.SimpleString:
+		return "+" + v.Str
+	case resp.Error:
+		return "-" + v.Str
+	case resp.Integer:
+		return fmt.Sprintf(":%d", v.Num)
+	case resp.Null:
+		return "(nil)"
+	default:
+		return formatTraceString(v.Bulk)
+	}
+}
+
+// formatTraceString formats a string for trace logging, detecting binary data
+func formatTraceString(s string) string {
+	if isBinaryString(s) {
+		return fmt.Sprintf("<binary:%s>", formatTraceSize(len(s)))
+	}
+	if len(s) > 100 {
+		return fmt.Sprintf("\"%s...\" (%s)", s[:100], formatTraceSize(len(s)))
+	}
+	return fmt.Sprintf("\"%s\"", s)
+}
+
+// isBinaryString checks if a string contains binary data
+func isBinaryString(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if r == utf8.RuneError {
+			return true
+		}
+		// Check for control characters except common whitespace
+		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' {
+			return true
+		}
+	}
+	return false
+}
+
+// formatTraceSize formats a size for trace logging
+func formatTraceSize(size int) string {
+	if size < 1024 {
+		return fmt.Sprintf("%dB", size)
+	}
+	if size < 1024*1024 {
+		return fmt.Sprintf("%.1fKB", float64(size)/1024)
+	}
+	return fmt.Sprintf("%.1fMB", float64(size)/(1024*1024))
+}
+
+// traceCommand logs a RESP command for tracing
+func (s *Server) traceCommand(conn net.Conn, cmd resp.Value) {
+	if !s.trace {
+		return
+	}
+	log.Printf("[TRACE] %s <- %s", conn.RemoteAddr(), formatRESPValue(cmd))
+}
+
+// traceResponse logs a RESP response for tracing
+func (s *Server) traceResponse(conn net.Conn, response resp.Value) {
+	if !s.trace {
+		return
+	}
+	log.Printf("[TRACE] %s -> %s", conn.RemoteAddr(), formatRESPValue(response))
 }
