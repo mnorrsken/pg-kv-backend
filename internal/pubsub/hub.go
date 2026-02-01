@@ -446,10 +446,13 @@ func (h *Hub) stopListening(channel string) {
 }
 
 // processListenCmds processes any pending LISTEN/UNLISTEN commands
-func (h *Hub) processListenCmds() {
+// Returns true if any commands were processed
+func (h *Hub) processListenCmds() bool {
+	processed := false
 	for {
 		select {
 		case cmd := <-h.listenCmds:
+			processed = true
 			if cmd.listen {
 				_, err := h.listenerConn.Exec(h.ctx, fmt.Sprintf("LISTEN %s", pgxIdentifier(cmd.channel)))
 				if err != nil {
@@ -473,7 +476,7 @@ func (h *Hub) processListenCmds() {
 				cmd.response <- nil
 			}
 		default:
-			return // No more commands
+			return processed
 		}
 	}
 }
@@ -481,6 +484,11 @@ func (h *Hub) processListenCmds() {
 // listenLoop continuously waits for PostgreSQL notifications
 func (h *Hub) listenLoop() {
 	defer h.wg.Done()
+
+	// Adaptive timeout: use a short timeout when commands are pending,
+	// longer when idle to reduce CPU usage
+	const shortTimeout = 100 * time.Millisecond
+	const longTimeout = 5 * time.Second
 
 	for {
 		select {
@@ -490,10 +498,17 @@ func (h *Hub) listenLoop() {
 		}
 
 		// Process any pending LISTEN/UNLISTEN commands first
-		h.processListenCmds()
+		hadCommands := h.processListenCmds()
 
-		// Wait for notification with a short timeout so we can process commands
-		ctx, cancel := context.WithTimeout(h.ctx, 100*time.Millisecond)
+		// Use shorter timeout if we just processed commands (more might be coming)
+		// or if there are pending commands in the channel
+		timeout := longTimeout
+		if hadCommands || len(h.listenCmds) > 0 {
+			timeout = shortTimeout
+		}
+
+		// Wait for notification
+		ctx, cancel := context.WithTimeout(h.ctx, timeout)
 		notification, err := h.listenerConn.WaitForNotification(ctx)
 		cancel()
 

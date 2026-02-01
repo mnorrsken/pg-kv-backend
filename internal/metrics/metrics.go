@@ -3,6 +3,7 @@ package metrics
 
 import (
 	"net/http"
+	"net/http/pprof"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -94,6 +95,18 @@ func NewServer(addr string) *Server {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
+
+	// Register pprof handlers for production profiling
+	// CPU profile: curl http://host:port/debug/pprof/profile?seconds=30 > cpu.prof
+	// Heap profile: curl http://host:port/debug/pprof/heap > heap.prof
+	// Goroutine: curl http://host:port/debug/pprof/goroutine?debug=1
+	// Block: curl http://host:port/debug/pprof/block > block.prof
+	// Mutex: curl http://host:port/debug/pprof/mutex > mutex.prof
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
 	return &Server{
 		server: &http.Server{
