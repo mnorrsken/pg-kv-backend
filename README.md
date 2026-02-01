@@ -7,16 +7,18 @@ A Redis 7 API-compatible server that uses PostgreSQL as the backend storage.
 - Redis protocol compatible (RESP2 and RESP3)
 - PostgreSQL persistent storage
 - Full pub/sub support with RESP3 Push messages
+- Lua scripting support (EVAL/EVALSHA/SCRIPT)
 - Transaction support (MULTI/EXEC/DISCARD)
 - Supports common Redis commands:
   - **String commands**: GET, SET, SETNX, SETEX, MGET, MSET, INCR, DECR, INCRBY, DECRBY, APPEND
-  - **Key commands**: DEL, EXISTS, EXPIRE, TTL, PTTL, PERSIST, KEYS, TYPE, RENAME
+  - **Key commands**: DEL, EXISTS, EXPIRE, TTL, PTTL, PERSIST, KEYS, TYPE, RENAME, SCAN
   - **Hash commands**: HGET, HSET, HDEL, HGETALL, HMGET, HMSET, HEXISTS, HKEYS, HVALS, HLEN, HSCAN
-  - **List commands**: LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE, LINDEX
+  - **List commands**: LPUSH, RPUSH, LPOP, RPOP, BLPOP, BRPOP, LLEN, LRANGE, LINDEX
   - **Set commands**: SADD, SREM, SMEMBERS, SISMEMBER, SCARD
   - **Sorted set commands**: ZADD, ZRANGE, ZSCORE, ZREM, ZCARD
   - **Pub/Sub commands**: SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH
   - **Transaction commands**: MULTI, EXEC, DISCARD, WATCH, UNWATCH
+  - **Scripting commands**: EVAL, EVALSHA, SCRIPT LOAD, SCRIPT EXISTS, SCRIPT FLUSH
   - **Connection commands**: PING, ECHO, AUTH, QUIT, HELLO
   - **Client commands**: CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT SETINFO, CLIENT INFO, CLIENT LIST
   - **Server commands**: INFO, DBSIZE, FLUSHDB, FLUSHALL, COMMAND
@@ -39,6 +41,37 @@ HELLO 3
 # - Pub/sub messages use Push type (out-of-band), allowing commands while subscribed
 # - Better type information for clients
 ```
+
+## Lua Scripting
+
+postkeys supports Lua scripting with `EVAL`, `EVALSHA`, and `SCRIPT` commands, enabling atomic operations and complex logic:
+
+```bash
+# Execute a script directly
+EVAL "return redis.call('GET', KEYS[1])" 1 mykey
+
+# Load and cache a script
+SCRIPT LOAD "return redis.call('INCR', KEYS[1])"
+# Returns: "sha1hash..."
+
+# Execute cached script
+EVALSHA sha1hash 1 counter
+
+# Check if scripts exist
+SCRIPT EXISTS sha1hash1 sha1hash2
+
+# Clear script cache
+SCRIPT FLUSH
+```
+
+Scripts have access to:
+- `KEYS` table - keys passed to the script
+- `ARGV` table - additional arguments
+- `redis.call(cmd, ...)` - execute Redis command (raises error on failure)
+- `redis.pcall(cmd, ...)` - execute Redis command (returns error as table)
+- `redis.sha1hex(str)` - compute SHA1 hash
+
+**Note**: Scripts execute atomically. Certain commands are blocked from scripts: `SUBSCRIBE`, `PUBLISH`, `MULTI`, `EXEC`, `WATCH`, nested `EVAL`/`EVALSHA`.
 
 ## Requirements
 

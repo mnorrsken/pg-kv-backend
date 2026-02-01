@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -2961,6 +2962,279 @@ func TestScanWithCount(t *testing.T) {
 	// Cursor should not be 0 if there are more keys
 	if cursor == 0 && len(keys) < 20 {
 		t.Error("Expected non-zero cursor for more keys")
+	}
+}
+
+// ============== Lua Scripting Tests ==============
+
+func TestEvalSimple(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Simple script that returns a value
+	script := `return "hello"`
+	result, err := ts.client.Eval(ctx, script, []string{}).Result()
+	if err != nil {
+		t.Fatalf("EVAL failed: %v", err)
+	}
+	if result != "hello" {
+		t.Errorf("Expected 'hello', got %v", result)
+	}
+}
+
+func TestEvalWithKeys(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set a value first
+	ts.client.Set(ctx, "mykey", "myvalue", 0)
+
+	// Script that reads a key using KEYS array
+	script := `return redis.call('GET', KEYS[1])`
+	result, err := ts.client.Eval(ctx, script, []string{"mykey"}).Result()
+	if err != nil {
+		t.Fatalf("EVAL failed: %v", err)
+	}
+	if result != "myvalue" {
+		t.Errorf("Expected 'myvalue', got %v", result)
+	}
+}
+
+func TestEvalWithArgv(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Script that sets a value using KEYS and ARGV
+	script := `
+		redis.call('SET', KEYS[1], ARGV[1])
+		return redis.call('GET', KEYS[1])
+	`
+	result, err := ts.client.Eval(ctx, script, []string{"testkey"}, "testvalue").Result()
+	if err != nil {
+		t.Fatalf("EVAL failed: %v", err)
+	}
+	if result != "testvalue" {
+		t.Errorf("Expected 'testvalue', got %v", result)
+	}
+}
+
+func TestEvalReturnsInteger(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Script that returns an integer
+	script := `return 42`
+	result, err := ts.client.Eval(ctx, script, []string{}).Int64()
+	if err != nil {
+		t.Fatalf("EVAL failed: %v", err)
+	}
+	if result != 42 {
+		t.Errorf("Expected 42, got %d", result)
+	}
+}
+
+func TestEvalReturnsArray(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Script that returns an array
+	script := `return {"one", "two", "three"}`
+	result, err := ts.client.Eval(ctx, script, []string{}).Slice()
+	if err != nil {
+		t.Fatalf("EVAL failed: %v", err)
+	}
+	if len(result) != 3 {
+		t.Errorf("Expected 3 elements, got %d", len(result))
+	}
+}
+
+func TestEvalIncrScript(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Script that increments a value atomically
+	script := `
+		local current = redis.call('GET', KEYS[1])
+		if not current then
+			current = 0
+		else
+			current = tonumber(current)
+		end
+		local new = current + tonumber(ARGV[1])
+		redis.call('SET', KEYS[1], new)
+		return new
+	`
+
+	// First increment
+	result, err := ts.client.Eval(ctx, script, []string{"counter"}, "5").Int64()
+	if err != nil {
+		t.Fatalf("EVAL failed: %v", err)
+	}
+	if result != 5 {
+		t.Errorf("Expected 5, got %d", result)
+	}
+
+	// Second increment
+	result, err = ts.client.Eval(ctx, script, []string{"counter"}, "3").Int64()
+	if err != nil {
+		t.Fatalf("EVAL failed: %v", err)
+	}
+	if result != 8 {
+		t.Errorf("Expected 8, got %d", result)
+	}
+}
+
+func TestScriptLoad(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	script := `return "loaded"`
+
+	// Load the script
+	sha, err := ts.client.ScriptLoad(ctx, script).Result()
+	if err != nil {
+		t.Fatalf("SCRIPT LOAD failed: %v", err)
+	}
+	if len(sha) != 40 {
+		t.Errorf("Expected 40-char SHA1, got %d chars: %s", len(sha), sha)
+	}
+}
+
+func TestEvalSha(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	script := `return ARGV[1]`
+
+	// Load the script first
+	sha, err := ts.client.ScriptLoad(ctx, script).Result()
+	if err != nil {
+		t.Fatalf("SCRIPT LOAD failed: %v", err)
+	}
+
+	// Execute using EVALSHA
+	result, err := ts.client.EvalSha(ctx, sha, []string{}, "hello from evalsha").Result()
+	if err != nil {
+		t.Fatalf("EVALSHA failed: %v", err)
+	}
+	if result != "hello from evalsha" {
+		t.Errorf("Expected 'hello from evalsha', got %v", result)
+	}
+}
+
+func TestScriptExists(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	script := `return 1`
+
+	// Load the script
+	sha, err := ts.client.ScriptLoad(ctx, script).Result()
+	if err != nil {
+		t.Fatalf("SCRIPT LOAD failed: %v", err)
+	}
+
+	// Check if it exists
+	exists, err := ts.client.ScriptExists(ctx, sha, "nonexistent123456789012345678901234567890").Result()
+	if err != nil {
+		t.Fatalf("SCRIPT EXISTS failed: %v", err)
+	}
+	if len(exists) != 2 {
+		t.Fatalf("Expected 2 results, got %d", len(exists))
+	}
+	if !exists[0] {
+		t.Error("Expected first script to exist")
+	}
+	if exists[1] {
+		t.Error("Expected second script to not exist")
+	}
+}
+
+func TestEvalShaNotFound(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Try to execute a non-existent script
+	_, err := ts.client.EvalSha(ctx, "0000000000000000000000000000000000000000", []string{}).Result()
+	if err == nil {
+		t.Fatal("Expected NOSCRIPT error")
+	}
+	if !strings.Contains(err.Error(), "NOSCRIPT") {
+		t.Errorf("Expected NOSCRIPT error, got: %v", err)
+	}
+}
+
+func TestEvalRedisCallError(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Script that calls redis.pcall with wrong args (should return error table)
+	script := `
+		local result = redis.pcall('SET')
+		if result.err then
+			return result.err
+		end
+		return "ok"
+	`
+	result, err := ts.client.Eval(ctx, script, []string{}).Result()
+	if err != nil {
+		t.Fatalf("EVAL failed: %v", err)
+	}
+	// The result should contain an error message about wrong args
+	if str, ok := result.(string); ok {
+		if !strings.Contains(strings.ToLower(str), "wrong") {
+			t.Errorf("Expected error message about wrong args, got: %v", result)
+		}
+	}
+}
+
+func TestEvalListOperations(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Script that does multiple list operations
+	script := `
+		redis.call('RPUSH', KEYS[1], 'a', 'b', 'c')
+		local len = redis.call('LLEN', KEYS[1])
+		local items = redis.call('LRANGE', KEYS[1], 0, -1)
+		return {len, items}
+	`
+	result, err := ts.client.Eval(ctx, script, []string{"testlist"}).Slice()
+	if err != nil {
+		t.Fatalf("EVAL failed: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("Expected 2 elements, got %d", len(result))
+	}
+
+	// First element should be the length (3)
+	lenVal, _ := result[0].(int64)
+	if lenVal != 3 {
+		t.Errorf("Expected length 3, got %v", result[0])
 	}
 }
 

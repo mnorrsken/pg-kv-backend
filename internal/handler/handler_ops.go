@@ -1452,6 +1452,14 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 	case "DBSIZE":
 		return h.dbsizeOp(ctx, ops, args)
 
+	// Scripting commands
+	case "EVAL":
+		return h.evalOp(ctx, ops, args)
+	case "EVALSHA":
+		return h.evalshaOp(ctx, ops, args)
+	case "SCRIPT":
+		return h.scriptOp(ctx, ops, args)
+
 	default:
 		return resp.Err(fmt.Sprintf("unknown command '%s'", cmdName))
 	}
