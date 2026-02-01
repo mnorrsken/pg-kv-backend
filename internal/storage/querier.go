@@ -1138,6 +1138,10 @@ func (o queryOps) lPush(ctx context.Context, q Querier, key string, values []str
 	// Return new length
 	var length int64
 	q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length)
+
+	// Notify any waiting BLPOP/BRPOP clients
+	_, _ = q.Exec(ctx, "SELECT pg_notify('__keyspace@0__:' || $1, 'lpush')", key)
+
 	return length, nil
 }
 
@@ -1178,26 +1182,31 @@ func (o queryOps) rPush(ctx context.Context, q Querier, key string, values []str
 	// Return new length
 	var length int64
 	q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length)
+
+	// Notify any waiting BLPOP/BRPOP clients
+	_, _ = q.Exec(ctx, "SELECT pg_notify('__keyspace@0__:' || $1, 'rpush')", key)
+
 	return length, nil
 }
 
 func (o queryOps) lPop(ctx context.Context, q Querier, key string) (string, bool, error) {
-	// Find and delete the leftmost element
+	// Find and delete the leftmost element in a single query using CTE
 	var value []byte
-	var idx int64
 	err := q.QueryRow(ctx,
-		"SELECT idx, value FROM kv_lists WHERE key = $1 ORDER BY idx ASC LIMIT 1",
+		`WITH deleted AS (
+			DELETE FROM kv_lists
+			WHERE key = $1 AND idx = (
+				SELECT idx FROM kv_lists WHERE key = $1 ORDER BY idx ASC LIMIT 1
+			)
+			RETURNING value
+		)
+		SELECT value FROM deleted`,
 		key,
-	).Scan(&idx, &value)
+	).Scan(&value)
 
 	if err == pgx.ErrNoRows {
 		return "", false, nil
 	}
-	if err != nil {
-		return "", false, err
-	}
-
-	_, err = q.Exec(ctx, "DELETE FROM kv_lists WHERE key = $1 AND idx = $2", key, idx)
 	if err != nil {
 		return "", false, err
 	}
@@ -1206,22 +1215,23 @@ func (o queryOps) lPop(ctx context.Context, q Querier, key string) (string, bool
 }
 
 func (o queryOps) rPop(ctx context.Context, q Querier, key string) (string, bool, error) {
-	// Find and delete the rightmost element
+	// Find and delete the rightmost element in a single query using CTE
 	var value []byte
-	var idx int64
 	err := q.QueryRow(ctx,
-		"SELECT idx, value FROM kv_lists WHERE key = $1 ORDER BY idx DESC LIMIT 1",
+		`WITH deleted AS (
+			DELETE FROM kv_lists
+			WHERE key = $1 AND idx = (
+				SELECT idx FROM kv_lists WHERE key = $1 ORDER BY idx DESC LIMIT 1
+			)
+			RETURNING value
+		)
+		SELECT value FROM deleted`,
 		key,
-	).Scan(&idx, &value)
+	).Scan(&value)
 
 	if err == pgx.ErrNoRows {
 		return "", false, nil
 	}
-	if err != nil {
-		return "", false, err
-	}
-
-	_, err = q.Exec(ctx, "DELETE FROM kv_lists WHERE key = $1 AND idx = $2", key, idx)
 	if err != nil {
 		return "", false, err
 	}

@@ -1236,8 +1236,8 @@ func (h *Handler) brpopOp(ctx context.Context, ops storage.Operations, args []re
 		deadline = time.Now().Add(time.Duration(timeout * float64(time.Second)))
 	}
 
-	// Poll interval - short for responsiveness
-	pollInterval := 100 * time.Millisecond
+	// Poll interval - use short interval for low latency
+	pollInterval := 10 * time.Millisecond
 
 	for {
 		// Try each key in order
@@ -1291,8 +1291,8 @@ func (h *Handler) blpopOp(ctx context.Context, ops storage.Operations, args []re
 		deadline = time.Now().Add(time.Duration(timeout * float64(time.Second)))
 	}
 
-	// Poll interval - short for responsiveness
-	pollInterval := 100 * time.Millisecond
+	// Poll interval - use short interval for low latency
+	pollInterval := 10 * time.Millisecond
 
 	for {
 		// Try each key in order
