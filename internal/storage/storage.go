@@ -12,21 +12,21 @@ import (
 
 // Store provides PostgreSQL-backed storage for Redis operations
 type Store struct {
-	pool     *pgxpool.Pool
-	connStr  string
-	ops      queryOps
-	sqlTrace bool
+	pool          *pgxpool.Pool
+	connStr       string
+	ops           queryOps
+	sqlTraceLevel int // 0=off, 1=important, 2=most queries, 3=everything
 }
 
 // Config holds PostgreSQL connection configuration
 type Config struct {
-	Host     string
-	Port     int
-	User     string
-	Password string
-	Database string
-	SSLMode  string
-	SQLTrace bool
+	Host          string
+	Port          int
+	User          string
+	Password      string
+	Database      string
+	SSLMode       string
+	SQLTraceLevel int // 0=off, 1=important, 2=most queries, 3=everything
 }
 
 // New creates a new Store with the given configuration
@@ -41,7 +41,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("failed to create pool: %w", err)
 	}
 
-	store := &Store{pool: pool, connStr: connStr, sqlTrace: cfg.SQLTrace}
+	store := &Store{pool: pool, connStr: connStr, sqlTraceLevel: cfg.SQLTraceLevel}
 	if err := store.initSchema(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
@@ -186,16 +186,16 @@ func (s *Store) withTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 
 // querier returns a Querier, optionally wrapped with tracing
 func (s *Store) querier() Querier {
-	if s.sqlTrace {
-		return NewTracingQuerier(s.pool)
+	if s.sqlTraceLevel > 0 {
+		return NewTracingQuerier(s.pool, s.sqlTraceLevel)
 	}
 	return s.pool
 }
 
 // txQuerier returns a Querier for a transaction, optionally wrapped with tracing
 func (s *Store) txQuerier(tx pgx.Tx) Querier {
-	if s.sqlTrace {
-		return NewTracingQuerier(tx)
+	if s.sqlTraceLevel > 0 {
+		return NewTracingQuerier(tx, s.sqlTraceLevel)
 	}
 	return tx
 }
@@ -206,7 +206,7 @@ func (s *Store) BeginTx(ctx context.Context) (Transaction, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &TxStore{tx: tx, sqlTrace: s.sqlTrace}, nil
+	return &TxStore{tx: tx, sqlTraceLevel: s.sqlTraceLevel}, nil
 }
 
 // ============== String Commands ==============

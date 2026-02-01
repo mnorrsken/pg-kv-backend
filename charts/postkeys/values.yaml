@@ -71,13 +71,21 @@ affinity: {}
 # Enable debug logging (sets DEBUG=1)
 debug: false
 
-# Enable SQL query tracing (sets SQLTRACE=true)
-# WARNING: This outputs all SQL queries to logs - use only for debugging
-sqlTrace: false
+# SQL query tracing level (sets SQLTRACE=0-3)
+# 0 = off (default)
+# 1 = important only (DDL, TRUNCATE, errors)
+# 2 = most queries (INSERT, UPDATE, DELETE)
+# 3 = everything (including SELECT)
+# WARNING: Higher levels output more queries to logs - use only for debugging
+sqlTraceLevel: 0
 
-# Enable RESP command tracing (sets TRACE=true)
-# WARNING: This outputs all Redis commands to logs - use only for debugging
-trace: false
+# RESP command tracing level (sets TRACE=0-3)
+# 0 = off (default)
+# 1 = important only (AUTH, FLUSHDB, CONFIG, CLUSTER)
+# 2 = most commands (excludes GET, SET, and other high-frequency commands)
+# 3 = everything (including GET, SET, HGET, HSET, etc.)
+# WARNING: Higher levels output more commands to logs - use only for debugging
+traceLevel: 0
 
 # Redis server configuration
 redis:

@@ -11,16 +11,16 @@ import (
 
 // TxStore wraps a PostgreSQL transaction and implements the Transaction interface
 type TxStore struct {
-	tx       pgx.Tx
-	ops      queryOps
-	done     bool
-	sqlTrace bool
+	tx            pgx.Tx
+	ops           queryOps
+	done          bool
+	sqlTraceLevel int // 0=off, 1=important, 2=most queries, 3=everything
 }
 
 // querier returns a Querier for the transaction, optionally wrapped with tracing
 func (t *TxStore) querier() Querier {
-	if t.sqlTrace {
-		return NewTracingQuerier(t.tx)
+	if t.sqlTraceLevel > 0 {
+		return NewTracingQuerier(t.tx, t.sqlTraceLevel)
 	}
 	return t.tx
 }

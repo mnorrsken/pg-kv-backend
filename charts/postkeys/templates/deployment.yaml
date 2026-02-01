@@ -125,13 +125,13 @@ spec:
             - name: DEBUG
               value: "1"
             {{- end }}
-            {{- if .Values.sqlTrace }}
+            {{- if gt (int .Values.sqlTraceLevel) 0 }}
             - name: SQLTRACE
-              value: "true"
+              value: {{ .Values.sqlTraceLevel | quote }}
             {{- end }}
-            {{- if .Values.trace }}
+            {{- if gt (int .Values.traceLevel) 0 }}
             - name: TRACE
-              value: "true"
+              value: {{ .Values.traceLevel | quote }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

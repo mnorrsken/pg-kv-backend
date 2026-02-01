@@ -22,7 +22,7 @@ A Redis 7 API-compatible server that uses PostgreSQL as the backend storage.
   - **Scripting commands**: EVAL, EVALSHA, SCRIPT LOAD, SCRIPT EXISTS, SCRIPT FLUSH
   - **Connection commands**: PING, ECHO, AUTH, QUIT, HELLO
   - **Client commands**: CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT SETINFO, CLIENT INFO, CLIENT LIST
-  - **Server commands**: INFO, DBSIZE, FLUSHDB, FLUSHALL, COMMAND
+  - **Server commands**: INFO, DBSIZE, FLUSHDB, FLUSHALL, COMMAND, CLUSTER (standalone mode)
 
 ## Protocol Support
 
@@ -104,6 +104,8 @@ Environment variables:
 | `CACHE_TTL` | Cache TTL duration | `250ms` |
 | `CACHE_MAX_SIZE` | Maximum cached entries | `10000` |
 | `DEBUG` | Enable debug logging (set to `1` to enable) | `` |
+| `SQLTRACE` | SQL query tracing level (0-3, see Tracing section) | `0` |
+| `TRACE` | RESP command tracing level (0-3, see Tracing section) | `0` |
 
 ### In-Memory Cache
 
@@ -121,6 +123,55 @@ export CACHE_MAX_SIZE=10000
 - In **multi-pod deployments**, cached data may be stale for up to TTL duration
 - Writes (`SET`, `DEL`, etc.) invalidate the local cache immediately
 - Monitor cache effectiveness with `postkeys_cache_hits_total` and `postkeys_cache_misses_total` metrics
+
+### Tracing
+
+postkeys provides configurable tracing with three levels for both SQL and RESP commands:
+
+| Level | Description |
+|-------|-------------|
+| 0 | Off (default) |
+| 1 | Important only - administrative commands, DDL, errors |
+| 2 | Most operations - write operations, moderate frequency commands |
+| 3 | Everything - including high-frequency reads (GET, SET, etc.) |
+
+**SQL Tracing** (`SQLTRACE=1-3`) logs PostgreSQL queries based on level:
+- Level 1: DDL (TRUNCATE, DROP, ALTER), pg_notify, errors
+- Level 2: All writes (INSERT, UPDATE, DELETE, CREATE)
+- Level 3: Everything including SELECTs
+
+```
+[SQLTRACE] SELECT value FROM kv_strings WHERE key = $1 [$1="mykey"] -> rows (1.234ms)
+```
+
+**RESP Command Tracing** (`TRACE=1-3`) logs Redis commands based on level:
+- Level 1: AUTH, FLUSHDB, FLUSHALL, CONFIG, CLUSTER, DEBUG
+- Level 2: PUBLISH, SUBSCRIBE, DEL, EXPIRE, RENAME, etc.
+- Level 3: GET, SET, HGET, HSET, LPUSH, RPUSH, and all other commands
+
+```
+[TRACE] 10.0.0.1:54321 <- ["SET", "mykey", "myvalue"]
+[TRACE] 10.0.0.1:54321 -> +OK
+```
+
+Binary data is automatically detected and replaced with `<binary:SIZE>` to keep logs readable.
+Errors are always logged at any trace level > 0.
+
+> **Warning:** Higher trace levels generate significant log volume. Use level 3 only for debugging, not in production.
+
+### Graceful Shutdown
+
+postkeys handles shutdown signals gracefully:
+
+- **SIGINT** (Ctrl+C) and **SIGTERM**: Initiate graceful shutdown
+- **SIGHUP**: Also triggers graceful shutdown (can be used for restarts)
+- A second signal during shutdown forces immediate exit
+
+During graceful shutdown:
+1. Stop accepting new connections
+2. Wait for in-flight requests to complete (up to 30 seconds)
+3. Close database connections
+4. Exit cleanly
 
 ## Running
 
@@ -317,6 +368,8 @@ The following table lists the configurable parameters of the postkeys chart and 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `debug` | Enable debug logging (sets DEBUG=1) | `false` |
+| `sqlTraceLevel` | SQL query tracing level 0-3 (0=off, 1=important, 2=writes, 3=all) | `0` |
+| `traceLevel` | RESP command tracing level 0-3 (0=off, 1=important, 2=most, 3=all) | `0` |
 
 #### Metrics Configuration
 

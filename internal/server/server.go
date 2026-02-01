@@ -19,14 +19,14 @@ import (
 
 // Server represents a Redis-compatible server
 type Server struct {
-	addr     string
-	handler  *handler.Handler
-	listener net.Listener
-	quit     chan struct{}
-	wg       sync.WaitGroup
-	debug    bool
-	trace    bool
-	pubsub   *pubsub.Hub
+	addr       string
+	handler    *handler.Handler
+	listener   net.Listener
+	quit       chan struct{}
+	wg         sync.WaitGroup
+	debug      bool
+	traceLevel int // 0=off, 1=important only, 2=most commands, 3=everything
+	pubsub     *pubsub.Hub
 }
 
 // New creates a new server
@@ -50,13 +50,13 @@ func NewWithDebug(addr string, h *handler.Handler, debug bool) *Server {
 }
 
 // NewWithOptions creates a new server with all options
-func NewWithOptions(addr string, h *handler.Handler, debug, trace bool) *Server {
+func NewWithOptions(addr string, h *handler.Handler, debug bool, traceLevel int) *Server {
 	return &Server{
-		addr:    addr,
-		handler: h,
-		quit:    make(chan struct{}),
-		debug:   debug,
-		trace:   trace,
+		addr:       addr,
+		handler:    h,
+		quit:       make(chan struct{}),
+		debug:      debug,
+		traceLevel: traceLevel,
 	}
 }
 
@@ -307,10 +307,10 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		// Trace outgoing response(s)
 		if len(multiResponse) > 0 {
 			for _, r := range multiResponse {
-				s.traceResponse(conn, r)
+				s.traceResponse(conn, cmd, r)
 			}
 		} else {
-			s.traceResponse(conn, response)
+			s.traceResponse(conn, cmd, response)
 		}
 
 		// Write response(s) - pub/sub commands may have multiple responses
@@ -418,18 +418,71 @@ func formatTraceSize(size int) string {
 	return fmt.Sprintf("%.1fMB", float64(size)/(1024*1024))
 }
 
-// traceCommand logs a RESP command for tracing
-func (s *Server) traceCommand(conn net.Conn, cmd resp.Value) {
-	if !s.trace {
-		return
+// RESP command trace levels:
+// Level 1: Important/infrequent commands (AUTH, FLUSHDB, FLUSHALL, SHUTDOWN, CONFIG, DEBUG, CLUSTER)
+// Level 2: Most commands except high-frequency ones (excludes GET, SET, HGET, HSET, LPUSH, RPUSH, etc.)
+// Level 3: Everything including GET, SET, and other high-frequency commands
+
+// getCommandLevel returns the minimum trace level required to log a command
+func getCommandLevel(cmdName string) int {
+	switch cmdName {
+	// Level 1: Important/administrative commands
+	case "AUTH", "FLUSHDB", "FLUSHALL", "SHUTDOWN", "DEBUG", "CONFIG", "CLUSTER",
+		"BGREWRITEAOF", "BGSAVE", "SAVE", "SLAVEOF", "REPLICAOF", "FAILOVER",
+		"ACL", "SLOWLOG", "MIGRATE", "RESTORE", "DUMP":
+		return 1
+
+	// Level 3: High-frequency commands (most common operations)
+	case "GET", "SET", "MGET", "MSET", "SETEX", "SETNX", "GETSET",
+		"HGET", "HSET", "HMGET", "HMSET", "HGETALL", "HDEL", "HEXISTS", "HLEN", "HKEYS", "HVALS",
+		"LPUSH", "RPUSH", "LPOP", "RPOP", "LRANGE", "LLEN", "LINDEX", "LSET",
+		"SADD", "SREM", "SMEMBERS", "SISMEMBER", "SCARD", "SPOP", "SRANDMEMBER",
+		"ZADD", "ZREM", "ZRANGE", "ZRANGEBYSCORE", "ZRANK", "ZSCORE", "ZCARD", "ZINCRBY",
+		"INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
+		"EXPIRE", "TTL", "PTTL", "EXPIREAT", "PEXPIRE", "PEXPIREAT", "PERSIST",
+		"EXISTS", "DEL", "TYPE", "KEYS", "SCAN", "HSCAN", "SSCAN", "ZSCAN",
+		"PING", "ECHO", "TIME", "DBSIZE",
+		"PFADD", "PFCOUNT", "PFMERGE":
+		return 3
+
+	// Level 2: Everything else (moderate frequency)
+	default:
+		return 2
 	}
-	log.Printf("[TRACE] %s <- %s", conn.RemoteAddr(), formatRESPValue(cmd))
 }
 
-// traceResponse logs a RESP response for tracing
-func (s *Server) traceResponse(conn net.Conn, response resp.Value) {
-	if !s.trace {
+// traceCommand logs a RESP command for tracing based on trace level
+func (s *Server) traceCommand(conn net.Conn, cmd resp.Value) {
+	if s.traceLevel <= 0 {
 		return
 	}
-	log.Printf("[TRACE] %s -> %s", conn.RemoteAddr(), formatRESPValue(response))
+
+	// Extract command name for level check
+	cmdName := ""
+	if cmd.Type == resp.Array && len(cmd.Array) > 0 {
+		cmdName = strings.ToUpper(cmd.Array[0].Bulk)
+	}
+
+	if s.traceLevel >= getCommandLevel(cmdName) {
+		log.Printf("[TRACE] %s <- %s", conn.RemoteAddr(), formatRESPValue(cmd))
+	}
+}
+
+// traceResponse logs a RESP response for tracing based on trace level
+func (s *Server) traceResponse(conn net.Conn, cmd resp.Value, response resp.Value) {
+	if s.traceLevel <= 0 {
+		return
+	}
+
+	// Extract command name for level check
+	cmdName := ""
+	if cmd.Type == resp.Array && len(cmd.Array) > 0 {
+		cmdName = strings.ToUpper(cmd.Array[0].Bulk)
+	}
+
+	// Always log errors regardless of level (if tracing is on)
+	isError := response.Type == resp.Error
+	if isError || s.traceLevel >= getCommandLevel(cmdName) {
+		log.Printf("[TRACE] %s -> %s", conn.RemoteAddr(), formatRESPValue(response))
+	}
 }

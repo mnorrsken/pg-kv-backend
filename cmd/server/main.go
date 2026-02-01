@@ -29,13 +29,13 @@ func main() {
 	// Connect to PostgreSQL
 	log.Printf("Connecting to PostgreSQL at %s:%d...", cfg.PGHost, cfg.PGPort)
 	store, err := storage.New(ctx, storage.Config{
-		Host:     cfg.PGHost,
-		Port:     cfg.PGPort,
-		User:     cfg.PGUser,
-		Password: cfg.PGPassword,
-		Database: cfg.PGDatabase,
-		SSLMode:  cfg.PGSSLMode,
-		SQLTrace: cfg.SQLTrace,
+		Host:          cfg.PGHost,
+		Port:          cfg.PGPort,
+		User:          cfg.PGUser,
+		Password:      cfg.PGPassword,
+		Database:      cfg.PGDatabase,
+		SSLMode:       cfg.PGSSLMode,
+		SQLTraceLevel: cfg.SQLTraceLevel,
 	})
 	if err != nil {
 		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
@@ -63,7 +63,7 @@ func main() {
 	h := handler.New(backend, cfg.RedisPassword)
 
 	// Create and start server
-	srv := server.NewWithOptions(cfg.RedisAddr, h, cfg.Debug, cfg.Trace)
+	srv := server.NewWithOptions(cfg.RedisAddr, h, cfg.Debug, cfg.TraceLevel)
 
 	// Initialize pub/sub hub
 	hub := pubsub.NewHub(store.Pool(), store.ConnString())
@@ -80,11 +80,11 @@ func main() {
 	if cfg.Debug {
 		log.Println("Debug logging is enabled (DEBUG=1)")
 	}
-	if cfg.SQLTrace {
-		log.Println("SQL query tracing is enabled (SQLTRACE=true)")
+	if cfg.SQLTraceLevel > 0 {
+		log.Printf("SQL query tracing is enabled at level %d (SQLTRACE=%d)", cfg.SQLTraceLevel, cfg.SQLTraceLevel)
 	}
-	if cfg.Trace {
-		log.Println("RESP command tracing is enabled (TRACE=true)")
+	if cfg.TraceLevel > 0 {
+		log.Printf("RESP command tracing is enabled at level %d (TRACE=%d)", cfg.TraceLevel, cfg.TraceLevel)
 	}
 	if cfg.RedisPassword != "" {
 		log.Println("Authentication is enabled")
