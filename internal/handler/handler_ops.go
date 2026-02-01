@@ -1669,6 +1669,31 @@ func (h *Handler) lremOp(ctx context.Context, ops storage.Operations, args []res
 	return resp.Int(removed)
 }
 
+func (h *Handler) ltrimOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("ltrim")
+	}
+
+	key := args[0].Bulk
+	start, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+	stop, err := strconv.ParseInt(args[2].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+
+	err = ops.LTrim(ctx, key, start, stop)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.OK()
+}
+
 func (h *Handler) rpoplpushOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
 	if len(args) != 2 {
 		return resp.ErrWrongArgs("rpoplpush")
@@ -1775,6 +1800,70 @@ func (h *Handler) sscanOp(ctx context.Context, ops storage.Operations, args []re
 func (h *Handler) unlinkOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
 	// UNLINK is like DEL but async - we just implement it as DEL
 	return h.delOp(ctx, ops, args)
+}
+
+// ============== HyperLogLog Commands ==============
+
+func (h *Handler) pfaddOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("pfadd")
+	}
+
+	key := args[0].Bulk
+	elements := make([]string, len(args)-1)
+	for i := 1; i < len(args); i++ {
+		elements[i-1] = args[i].Bulk
+	}
+
+	changed, err := ops.PFAdd(ctx, key, elements)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(changed)
+}
+
+func (h *Handler) pfcountOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("pfcount")
+	}
+
+	keys := make([]string, len(args))
+	for i, arg := range args {
+		keys[i] = arg.Bulk
+	}
+
+	count, err := ops.PFCount(ctx, keys)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(count)
+}
+
+func (h *Handler) pfmergeOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("pfmerge")
+	}
+
+	destKey := args[0].Bulk
+	sourceKeys := make([]string, len(args)-1)
+	for i := 1; i < len(args); i++ {
+		sourceKeys[i-1] = args[i].Bulk
+	}
+
+	err := ops.PFMerge(ctx, destKey, sourceKeys)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.OK()
 }
 
 // ============== Server Commands ==============
@@ -1908,6 +1997,8 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.lindexOp(ctx, ops, args)
 	case "LREM":
 		return h.lremOp(ctx, ops, args)
+	case "LTRIM":
+		return h.ltrimOp(ctx, ops, args)
 	case "RPOPLPUSH":
 		return h.rpoplpushOp(ctx, ops, args)
 
@@ -1954,6 +2045,14 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.zincrbyOp(ctx, ops, args)
 	case "ZPOPMIN":
 		return h.zpopminOp(ctx, ops, args)
+
+	// HyperLogLog commands
+	case "PFADD":
+		return h.pfaddOp(ctx, ops, args)
+	case "PFCOUNT":
+		return h.pfcountOp(ctx, ops, args)
+	case "PFMERGE":
+		return h.pfmergeOp(ctx, ops, args)
 
 	// Server commands
 	case "INFO":

@@ -235,8 +235,24 @@ func (t *MockTransaction) LRem(ctx context.Context, key string, count int64, ele
 	return t.parent.LRem(ctx, key, count, element)
 }
 
+func (t *MockTransaction) LTrim(ctx context.Context, key string, start, stop int64) error {
+	return t.parent.LTrim(ctx, key, start, stop)
+}
+
 func (t *MockTransaction) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
 	return t.parent.RPopLPush(ctx, source, destination)
+}
+
+func (t *MockTransaction) PFAdd(ctx context.Context, key string, elements []string) (int64, error) {
+	return t.parent.PFAdd(ctx, key, elements)
+}
+
+func (t *MockTransaction) PFCount(ctx context.Context, keys []string) (int64, error) {
+	return t.parent.PFCount(ctx, keys)
+}
+
+func (t *MockTransaction) PFMerge(ctx context.Context, destKey string, sourceKeys []string) error {
+	return t.parent.PFMerge(ctx, destKey, sourceKeys)
 }
 
 func (t *MockTransaction) DBSize(ctx context.Context) (int64, error) {

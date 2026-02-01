@@ -309,10 +309,31 @@ func (s *CachedStore) LRem(ctx context.Context, key string, count int64, element
 	return s.backend.LRem(ctx, key, count, element)
 }
 
+func (s *CachedStore) LTrim(ctx context.Context, key string, start, stop int64) error {
+	s.cache.Delete(key)
+	return s.backend.LTrim(ctx, key, start, stop)
+}
+
 func (s *CachedStore) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
 	s.cache.Delete(source)
 	s.cache.Delete(destination)
 	return s.backend.RPopLPush(ctx, source, destination)
+}
+
+// ============== HyperLogLog Commands ==============
+
+func (s *CachedStore) PFAdd(ctx context.Context, key string, elements []string) (int64, error) {
+	s.cache.Delete(key)
+	return s.backend.PFAdd(ctx, key, elements)
+}
+
+func (s *CachedStore) PFCount(ctx context.Context, keys []string) (int64, error) {
+	return s.backend.PFCount(ctx, keys)
+}
+
+func (s *CachedStore) PFMerge(ctx context.Context, destKey string, sourceKeys []string) error {
+	s.cache.Delete(destKey)
+	return s.backend.PFMerge(ctx, destKey, sourceKeys)
 }
 
 // ============== Server Commands ==============

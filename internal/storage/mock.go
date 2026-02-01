@@ -13,26 +13,28 @@ import (
 
 // MockStore provides an in-memory implementation of Backend for testing
 type MockStore struct {
-	mu        sync.RWMutex
-	strings   map[string]string
-	hashes    map[string]map[string]string
-	lists     map[string][]string
-	sets      map[string]map[string]struct{}
-	zsets     map[string]map[string]float64
-	keyTypes  map[string]KeyType
-	expiresAt map[string]time.Time
+	mu          sync.RWMutex
+	strings     map[string]string
+	hashes      map[string]map[string]string
+	lists       map[string][]string
+	sets        map[string]map[string]struct{}
+	zsets       map[string]map[string]float64
+	hyperloglogs map[string]*HyperLogLog
+	keyTypes    map[string]KeyType
+	expiresAt   map[string]time.Time
 }
 
 // NewMockStore creates a new in-memory mock store
 func NewMockStore() *MockStore {
 	return &MockStore{
-		strings:   make(map[string]string),
-		hashes:    make(map[string]map[string]string),
-		lists:     make(map[string][]string),
-		sets:      make(map[string]map[string]struct{}),
-		zsets:     make(map[string]map[string]float64),
-		keyTypes:  make(map[string]KeyType),
-		expiresAt: make(map[string]time.Time),
+		strings:      make(map[string]string),
+		hashes:       make(map[string]map[string]string),
+		lists:        make(map[string][]string),
+		sets:         make(map[string]map[string]struct{}),
+		zsets:        make(map[string]map[string]float64),
+		hyperloglogs: make(map[string]*HyperLogLog),
+		keyTypes:     make(map[string]KeyType),
+		expiresAt:    make(map[string]time.Time),
 	}
 }
 
@@ -55,6 +57,7 @@ func (m *MockStore) deleteKey(key string) {
 	delete(m.lists, key)
 	delete(m.sets, key)
 	delete(m.zsets, key)
+	delete(m.hyperloglogs, key)
 	delete(m.keyTypes, key)
 	delete(m.expiresAt, key)
 }
@@ -1311,6 +1314,53 @@ func (m *MockStore) LRem(ctx context.Context, key string, count int64, element s
 	return removed, nil
 }
 
+func (m *MockStore) LTrim(ctx context.Context, key string, start, stop int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		return nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeList {
+		return fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	list, ok := m.lists[key]
+	if !ok || len(list) == 0 {
+		return nil
+	}
+
+	length := int64(len(list))
+
+	// Normalize negative indices
+	if start < 0 {
+		start = length + start
+	}
+	if stop < 0 {
+		stop = length + stop
+	}
+
+	// Bound to valid range
+	if start < 0 {
+		start = 0
+	}
+	if stop >= length {
+		stop = length - 1
+	}
+
+	// If start > stop, delete entire list
+	if start > stop {
+		delete(m.lists, key)
+		delete(m.keyTypes, key)
+		delete(m.expiresAt, key)
+		return nil
+	}
+
+	m.lists[key] = list[start : stop+1]
+	return nil
+}
+
 func (m *MockStore) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1347,6 +1397,106 @@ func (m *MockStore) RPopLPush(ctx context.Context, source, destination string) (
 	return value, true, nil
 }
 
+// ============== HyperLogLog Commands ==============
+
+func (m *MockStore) PFAdd(ctx context.Context, key string, elements []string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		delete(m.hyperloglogs, key)
+		delete(m.keyTypes, key)
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != "hyperloglog" {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	hll, ok := m.hyperloglogs[key]
+	if !ok {
+		hll = NewHyperLogLog()
+		m.hyperloglogs[key] = hll
+		m.keyTypes[key] = "hyperloglog"
+	}
+
+	changed := false
+	for _, elem := range elements {
+		if hll.Add(elem) {
+			changed = true
+		}
+	}
+
+	if changed {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func (m *MockStore) PFCount(ctx context.Context, keys []string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	if len(keys) == 1 {
+		if m.isExpired(keys[0]) {
+			return 0, nil
+		}
+		hll, ok := m.hyperloglogs[keys[0]]
+		if !ok {
+			return 0, nil
+		}
+		return hll.Count(), nil
+	}
+
+	// Multiple keys - merge then count
+	merged := NewHyperLogLog()
+	for _, key := range keys {
+		if m.isExpired(key) {
+			continue
+		}
+		hll, ok := m.hyperloglogs[key]
+		if !ok {
+			continue
+		}
+		merged.Merge(hll)
+	}
+
+	return merged.Count(), nil
+}
+
+func (m *MockStore) PFMerge(ctx context.Context, destKey string, sourceKeys []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if t, ok := m.keyTypes[destKey]; ok && t != "hyperloglog" {
+		return fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	// Start with dest key's existing HLL (if any)
+	merged := NewHyperLogLog()
+	if hll, ok := m.hyperloglogs[destKey]; ok && !m.isExpired(destKey) {
+		merged.Merge(hll)
+	}
+
+	// Merge all source keys
+	for _, key := range sourceKeys {
+		if m.isExpired(key) {
+			continue
+		}
+		if hll, ok := m.hyperloglogs[key]; ok {
+			merged.Merge(hll)
+		}
+	}
+
+	m.hyperloglogs[destKey] = merged
+	m.keyTypes[destKey] = "hyperloglog"
+
+	return nil
+}
+
 // ============== Server Commands ==============
 
 func (m *MockStore) DBSize(ctx context.Context) (int64, error) {
@@ -1371,6 +1521,7 @@ func (m *MockStore) FlushDB(ctx context.Context) error {
 	m.lists = make(map[string][]string)
 	m.sets = make(map[string]map[string]struct{})
 	m.zsets = make(map[string]map[string]float64)
+	m.hyperloglogs = make(map[string]*HyperLogLog)
 	m.keyTypes = make(map[string]KeyType)
 	m.expiresAt = make(map[string]time.Time)
 

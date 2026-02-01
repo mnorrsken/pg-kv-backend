@@ -127,6 +127,14 @@ func (s *Store) initSchema(ctx context.Context) error {
 			expires_at TIMESTAMPTZ
 		);
 		CREATE INDEX IF NOT EXISTS idx_kv_meta_expires ON kv_meta(expires_at) WHERE expires_at IS NOT NULL;
+
+		-- HyperLogLog storage (stores serialized HLL registers)
+		CREATE TABLE IF NOT EXISTS kv_hyperloglog (
+			key TEXT PRIMARY KEY,
+			registers BYTEA NOT NULL,
+			expires_at TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_kv_hyperloglog_expires ON kv_hyperloglog(expires_at) WHERE expires_at IS NOT NULL;
 	`
 	_, err := s.pool.Exec(ctx, schema)
 	return err
@@ -467,6 +475,10 @@ func (s *Store) LRem(ctx context.Context, key string, count int64, element strin
 	return s.ops.lRem(ctx, s.pool, key, count, element)
 }
 
+func (s *Store) LTrim(ctx context.Context, key string, start, stop int64) error {
+	return s.ops.lTrim(ctx, s.pool, key, start, stop)
+}
+
 func (s *Store) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
 	var result string
 	var found bool
@@ -476,6 +488,20 @@ func (s *Store) RPopLPush(ctx context.Context, source, destination string) (stri
 		return err
 	})
 	return result, found, err
+}
+
+// ============== HyperLogLog Commands ==============
+
+func (s *Store) PFAdd(ctx context.Context, key string, elements []string) (int64, error) {
+	return s.ops.pfAdd(ctx, s.pool, key, elements)
+}
+
+func (s *Store) PFCount(ctx context.Context, keys []string) (int64, error) {
+	return s.ops.pfCount(ctx, s.pool, keys)
+}
+
+func (s *Store) PFMerge(ctx context.Context, destKey string, sourceKeys []string) error {
+	return s.ops.pfMerge(ctx, s.pool, destKey, sourceKeys)
 }
 
 // ============== Server Commands ==============
@@ -491,6 +517,7 @@ func (s *Store) FlushDB(ctx context.Context) error {
 		"TRUNCATE kv_lists",
 		"TRUNCATE kv_sets",
 		"TRUNCATE kv_zsets",
+		"TRUNCATE kv_hyperloglog",
 		"TRUNCATE kv_meta",
 	}
 	for _, q := range queries {

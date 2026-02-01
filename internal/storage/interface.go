@@ -65,6 +65,7 @@ type Operations interface {
 	LRange(ctx context.Context, key string, start, stop int64) ([]string, error)
 	LIndex(ctx context.Context, key string, index int64) (string, bool, error)
 	LRem(ctx context.Context, key string, count int64, element string) (int64, error)
+	LTrim(ctx context.Context, key string, start, stop int64) error
 	RPopLPush(ctx context.Context, source, destination string) (string, bool, error)
 
 	// Set commands
@@ -85,6 +86,11 @@ type Operations interface {
 	ZCard(ctx context.Context, key string) (int64, error)
 	ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error)
 	ZPopMin(ctx context.Context, key string, count int64) ([]ZMember, error)
+
+	// HyperLogLog commands
+	PFAdd(ctx context.Context, key string, elements []string) (int64, error)
+	PFCount(ctx context.Context, keys []string) (int64, error)
+	PFMerge(ctx context.Context, destKey string, sourceKeys []string) error
 
 	// Server commands
 	DBSize(ctx context.Context) (int64, error)

@@ -238,8 +238,26 @@ func (t *TxStore) LRem(ctx context.Context, key string, count int64, element str
 	return t.ops.lRem(ctx, t.tx, key, count, element)
 }
 
+func (t *TxStore) LTrim(ctx context.Context, key string, start, stop int64) error {
+	return t.ops.lTrim(ctx, t.tx, key, start, stop)
+}
+
 func (t *TxStore) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
 	return t.ops.rPopLPush(ctx, t.tx, source, destination)
+}
+
+// ============== HyperLogLog Commands ==============
+
+func (t *TxStore) PFAdd(ctx context.Context, key string, elements []string) (int64, error) {
+	return t.ops.pfAdd(ctx, t.tx, key, elements)
+}
+
+func (t *TxStore) PFCount(ctx context.Context, keys []string) (int64, error) {
+	return t.ops.pfCount(ctx, t.tx, keys)
+}
+
+func (t *TxStore) PFMerge(ctx context.Context, destKey string, sourceKeys []string) error {
+	return t.ops.pfMerge(ctx, t.tx, destKey, sourceKeys)
 }
 
 // ============== Server Commands ==============

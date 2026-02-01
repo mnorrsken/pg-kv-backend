@@ -3556,6 +3556,84 @@ func TestLRemFromTail(t *testing.T) {
 	}
 }
 
+func TestLTrim(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create a list
+	ts.client.RPush(ctx, "mylist", "one", "two", "three", "four", "five")
+
+	// Trim to keep only indices 1-3
+	err := ts.client.LTrim(ctx, "mylist", 1, 3).Err()
+	if err != nil {
+		t.Fatalf("LTRIM failed: %v", err)
+	}
+
+	// Should have 3 elements: two, three, four
+	result, _ := ts.client.LRange(ctx, "mylist", 0, -1).Result()
+	expected := []string{"two", "three", "four"}
+	if len(result) != len(expected) {
+		t.Fatalf("Expected %d elements, got %d: %v", len(expected), len(result), result)
+	}
+	for i, v := range result {
+		if v != expected[i] {
+			t.Errorf("Index %d: expected '%s', got '%s'", i, expected[i], v)
+		}
+	}
+}
+
+func TestLTrimNegativeIndices(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create a list
+	ts.client.RPush(ctx, "mylist", "one", "two", "three", "four", "five")
+
+	// Trim to keep last 3 elements using negative indices
+	err := ts.client.LTrim(ctx, "mylist", -3, -1).Err()
+	if err != nil {
+		t.Fatalf("LTRIM failed: %v", err)
+	}
+
+	// Should have: three, four, five
+	result, _ := ts.client.LRange(ctx, "mylist", 0, -1).Result()
+	expected := []string{"three", "four", "five"}
+	if len(result) != len(expected) {
+		t.Fatalf("Expected %d elements, got %d: %v", len(expected), len(result), result)
+	}
+	for i, v := range result {
+		if v != expected[i] {
+			t.Errorf("Index %d: expected '%s', got '%s'", i, expected[i], v)
+		}
+	}
+}
+
+func TestLTrimDeleteAll(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create a list
+	ts.client.RPush(ctx, "mylist", "one", "two", "three")
+
+	// Trim with start > stop deletes all
+	err := ts.client.LTrim(ctx, "mylist", 5, 2).Err()
+	if err != nil {
+		t.Fatalf("LTRIM failed: %v", err)
+	}
+
+	// List should be empty
+	length, _ := ts.client.LLen(ctx, "mylist").Result()
+	if length != 0 {
+		t.Errorf("Expected list to be empty, got length %d", length)
+	}
+}
+
 func TestRPopLPush(t *testing.T) {
 	ts := newTestServer(t, "")
 	defer ts.Close()
@@ -3858,5 +3936,141 @@ func BenchmarkSetGet(b *testing.B) {
 		key := fmt.Sprintf("key%d", i)
 		client.Set(ctx, key, "value", 0)
 		client.Get(ctx, key)
+	}
+}
+
+// ============== HyperLogLog Command Tests ==============
+
+func TestPFAdd(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add elements to HyperLogLog
+	result, err := ts.client.PFAdd(ctx, "hll", "a", "b", "c").Result()
+	if err != nil {
+		t.Fatalf("PFADD failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1 (modified), got %d", result)
+	}
+
+	// Add same elements again - should return 0 (not modified)
+	result, err = ts.client.PFAdd(ctx, "hll", "a", "b", "c").Result()
+	if err != nil {
+		t.Fatalf("PFADD failed: %v", err)
+	}
+	if result != 0 {
+		t.Errorf("Expected 0 (not modified), got %d", result)
+	}
+
+	// Add new elements - should return 1
+	result, err = ts.client.PFAdd(ctx, "hll", "d", "e").Result()
+	if err != nil {
+		t.Fatalf("PFADD failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1 (modified), got %d", result)
+	}
+}
+
+func TestPFCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Count on non-existent key
+	count, err := ts.client.PFCount(ctx, "hll").Result()
+	if err != nil {
+		t.Fatalf("PFCOUNT failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("Expected 0, got %d", count)
+	}
+
+	// Add elements
+	ts.client.PFAdd(ctx, "hll", "a", "b", "c", "d", "e")
+
+	// Count should be approximately 5
+	count, err = ts.client.PFCount(ctx, "hll").Result()
+	if err != nil {
+		t.Fatalf("PFCOUNT failed: %v", err)
+	}
+	// HyperLogLog is probabilistic, allow some error
+	if count < 4 || count > 6 {
+		t.Errorf("Expected approximately 5, got %d", count)
+	}
+}
+
+func TestPFCountMultipleKeys(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add to first HLL
+	ts.client.PFAdd(ctx, "hll1", "a", "b", "c")
+	// Add to second HLL with some overlap
+	ts.client.PFAdd(ctx, "hll2", "c", "d", "e")
+
+	// Count union of both (should be ~5 unique elements)
+	count, err := ts.client.PFCount(ctx, "hll1", "hll2").Result()
+	if err != nil {
+		t.Fatalf("PFCOUNT failed: %v", err)
+	}
+	// Allow for HLL error margin
+	if count < 4 || count > 6 {
+		t.Errorf("Expected approximately 5, got %d", count)
+	}
+}
+
+func TestPFMerge(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add to first HLL
+	ts.client.PFAdd(ctx, "hll1", "a", "b", "c")
+	// Add to second HLL
+	ts.client.PFAdd(ctx, "hll2", "d", "e", "f")
+
+	// Merge into dest
+	err := ts.client.PFMerge(ctx, "hll_merged", "hll1", "hll2").Err()
+	if err != nil {
+		t.Fatalf("PFMERGE failed: %v", err)
+	}
+
+	// Count merged should be ~6
+	count, err := ts.client.PFCount(ctx, "hll_merged").Result()
+	if err != nil {
+		t.Fatalf("PFCOUNT failed: %v", err)
+	}
+	if count < 5 || count > 7 {
+		t.Errorf("Expected approximately 6, got %d", count)
+	}
+}
+
+func TestPFAddLargeCardinality(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add 1000 unique elements
+	for i := 0; i < 1000; i++ {
+		ts.client.PFAdd(ctx, "hll", fmt.Sprintf("element%d", i))
+	}
+
+	// Count should be close to 1000 (within HLL error bounds ~1-2%)
+	count, err := ts.client.PFCount(ctx, "hll").Result()
+	if err != nil {
+		t.Fatalf("PFCOUNT failed: %v", err)
+	}
+	// Allow 5% error for HLL
+	if count < 950 || count > 1050 {
+		t.Errorf("Expected approximately 1000, got %d", count)
 	}
 }

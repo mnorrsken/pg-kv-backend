@@ -3,7 +3,6 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -649,15 +648,12 @@ func (o queryOps) lPush(ctx context.Context, q Querier, key string, values []str
 		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
-	// Get the current min index
-	var minIdx int64 = 0
-	q.QueryRow(ctx, "SELECT COALESCE(MIN(idx), 0) FROM kv_lists WHERE key = $1", key).Scan(&minIdx)
-
-	// Insert values at the beginning (in reverse order)
-	for i, value := range values {
+	// Insert values at the beginning using atomic subquery to avoid race conditions
+	for _, value := range values {
 		_, err := q.Exec(ctx,
-			"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
-			key, minIdx-int64(i+1), []byte(value),
+			`INSERT INTO kv_lists (key, idx, value) 
+			 VALUES ($1, COALESCE((SELECT MIN(idx) FROM kv_lists WHERE key = $1), 0) - 1, $2)`,
+			key, []byte(value),
 		)
 		if err != nil {
 			return 0, err
@@ -683,15 +679,12 @@ func (o queryOps) rPush(ctx context.Context, q Querier, key string, values []str
 		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
-	// Get the current max index
-	var maxIdx int64 = -1
-	q.QueryRow(ctx, "SELECT COALESCE(MAX(idx), -1) FROM kv_lists WHERE key = $1", key).Scan(&maxIdx)
-
-	// Insert values at the end
-	for i, value := range values {
+	// Insert values at the end using atomic subquery to avoid race conditions
+	for _, value := range values {
 		_, err := q.Exec(ctx,
-			"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
-			key, maxIdx+int64(i+1), []byte(value),
+			`INSERT INTO kv_lists (key, idx, value) 
+			 VALUES ($1, COALESCE((SELECT MAX(idx) FROM kv_lists WHERE key = $1), -1) + 1, $2)`,
+			key, []byte(value),
 		)
 		if err != nil {
 			return 0, err
@@ -1243,7 +1236,7 @@ func (o queryOps) lRem(ctx context.Context, q Querier, key string, count int64, 
 		fmt.Sprintf(`DELETE FROM kv_lists WHERE ctid IN (
 			SELECT ctid FROM kv_lists 
 			WHERE key = $1 AND value = $2
-			ORDER BY position %s
+			ORDER BY idx %s
 			LIMIT $3
 		)`, order),
 		key, []byte(element), absCount,
@@ -1259,15 +1252,15 @@ func (o queryOps) lRem(ctx context.Context, q Querier, key string, count int64, 
 func (o queryOps) rPopLPush(ctx context.Context, q Querier, source, destination string) (string, bool, error) {
 	// Pop from source (right)
 	var value []byte
-	var position int64
+	var idx int64
 
 	err := q.QueryRow(ctx,
-		`SELECT value, position FROM kv_lists 
+		`SELECT value, idx FROM kv_lists 
 		 WHERE key = $1 
-		 ORDER BY position DESC 
+		 ORDER BY idx DESC 
 		 LIMIT 1 FOR UPDATE`,
 		source,
-	).Scan(&value, &position)
+	).Scan(&value, &idx)
 
 	if err == pgx.ErrNoRows {
 		return "", false, nil
@@ -1278,8 +1271,8 @@ func (o queryOps) rPopLPush(ctx context.Context, q Querier, source, destination 
 
 	// Delete from source
 	_, err = q.Exec(ctx,
-		"DELETE FROM kv_lists WHERE key = $1 AND position = $2",
-		source, position,
+		"DELETE FROM kv_lists WHERE key = $1 AND idx = $2",
+		source, idx,
 	)
 	if err != nil {
 		return "", false, err
@@ -1287,38 +1280,230 @@ func (o queryOps) rPopLPush(ctx context.Context, q Querier, source, destination 
 
 	// Ensure meta entry exists for destination
 	_, err = q.Exec(ctx,
-		`INSERT INTO kv_meta (key, type) VALUES ($1, 'list') ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO kv_meta (key, key_type) VALUES ($1, 'list') ON CONFLICT (key) DO NOTHING`,
 		destination,
 	)
 	if err != nil {
 		return "", false, err
 	}
 
-	// Get min position for destination (to insert at head)
-	var minPos sql.NullInt64
-	err = q.QueryRow(ctx,
-		"SELECT MIN(position) FROM kv_lists WHERE key = $1",
-		destination,
-	).Scan(&minPos)
-	if err != nil {
-		return "", false, err
-	}
-
-	newPos := int64(0)
-	if minPos.Valid {
-		newPos = minPos.Int64 - 1
-	}
-
-	// Push to destination (left)
+	// Push to destination (left) using atomic subquery
 	_, err = q.Exec(ctx,
-		"INSERT INTO kv_lists (key, position, value) VALUES ($1, $2, $3)",
-		destination, newPos, value,
+		`INSERT INTO kv_lists (key, idx, value) 
+		 VALUES ($1, COALESCE((SELECT MIN(idx) FROM kv_lists WHERE key = $1), 0) - 1, $2)`,
+		destination, value,
 	)
 	if err != nil {
 		return "", false, err
 	}
 
 	return string(value), true, nil
+}
+
+func (o queryOps) lTrim(ctx context.Context, q Querier, key string, start, stop int64) error {
+	// Get total length
+	var length int64
+	err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length)
+	if err != nil {
+		return err
+	}
+
+	if length == 0 {
+		return nil
+	}
+
+	// Normalize negative indices
+	if start < 0 {
+		start = length + start
+	}
+	if stop < 0 {
+		stop = length + stop
+	}
+
+	// Bound to valid range
+	if start < 0 {
+		start = 0
+	}
+	if stop >= length {
+		stop = length - 1
+	}
+
+	// If start > stop, delete entire list
+	if start > stop {
+		_, err := q.Exec(ctx, "DELETE FROM kv_lists WHERE key = $1", key)
+		if err != nil {
+			return err
+		}
+		_, err = q.Exec(ctx, "DELETE FROM kv_meta WHERE key = $1", key)
+		return err
+	}
+
+	// Delete elements outside the range using ROW_NUMBER
+	_, err = q.Exec(ctx,
+		`DELETE FROM kv_lists WHERE ctid IN (
+			SELECT ctid FROM (
+				SELECT ctid, ROW_NUMBER() OVER (ORDER BY idx) - 1 AS pos
+				FROM kv_lists WHERE key = $1
+			) sub
+			WHERE pos < $2 OR pos > $3
+		)`,
+		key, start, stop,
+	)
+
+	return err
+}
+
+// ============== HyperLogLog Commands ==============
+
+func (o queryOps) pfAdd(ctx context.Context, q Querier, key string, elements []string) (int64, error) {
+	// Check key type if exists
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return 0, err
+	}
+	if keyType != TypeNone && keyType != "hyperloglog" {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	// Get existing HLL or create new one
+	var hll *HyperLogLog
+	var registers []byte
+	err = q.QueryRow(ctx,
+		"SELECT registers FROM kv_hyperloglog WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&registers)
+	if err == pgx.ErrNoRows {
+		hll = NewHyperLogLog()
+	} else if err != nil {
+		return 0, err
+	} else {
+		hll = HyperLogLogFromBytes(registers)
+	}
+
+	// Add elements and track if anything changed
+	changed := false
+	for _, elem := range elements {
+		if hll.Add(elem) {
+			changed = true
+		}
+	}
+
+	// Save updated HLL
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_hyperloglog (key, registers) VALUES ($1, $2)
+		 ON CONFLICT (key) DO UPDATE SET registers = $2`,
+		key, hll.ToBytes(),
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	// Update metadata
+	err = o.setMeta(ctx, q, key, "hyperloglog", nil)
+	if err != nil {
+		return 0, err
+	}
+
+	if changed {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func (o queryOps) pfCount(ctx context.Context, q Querier, keys []string) (int64, error) {
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	if len(keys) == 1 {
+		// Single key - just count
+		var registers []byte
+		err := q.QueryRow(ctx,
+			"SELECT registers FROM kv_hyperloglog WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+			keys[0],
+		).Scan(&registers)
+		if err == pgx.ErrNoRows {
+			return 0, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		hll := HyperLogLogFromBytes(registers)
+		return hll.Count(), nil
+	}
+
+	// Multiple keys - merge then count
+	merged := NewHyperLogLog()
+	for _, key := range keys {
+		var registers []byte
+		err := q.QueryRow(ctx,
+			"SELECT registers FROM kv_hyperloglog WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+			key,
+		).Scan(&registers)
+		if err == pgx.ErrNoRows {
+			continue // Skip non-existent keys
+		}
+		if err != nil {
+			return 0, err
+		}
+		hll := HyperLogLogFromBytes(registers)
+		merged.Merge(hll)
+	}
+
+	return merged.Count(), nil
+}
+
+func (o queryOps) pfMerge(ctx context.Context, q Querier, destKey string, sourceKeys []string) error {
+	// Check dest key type if exists
+	keyType, err := o.getKeyType(ctx, q, destKey)
+	if err != nil {
+		return err
+	}
+	if keyType != TypeNone && keyType != "hyperloglog" {
+		return fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	// Start with dest key's existing HLL (if any)
+	merged := NewHyperLogLog()
+	var registers []byte
+	err = q.QueryRow(ctx,
+		"SELECT registers FROM kv_hyperloglog WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		destKey,
+	).Scan(&registers)
+	if err == nil {
+		merged = HyperLogLogFromBytes(registers)
+	} else if err != pgx.ErrNoRows {
+		return err
+	}
+
+	// Merge all source keys
+	for _, key := range sourceKeys {
+		err := q.QueryRow(ctx,
+			"SELECT registers FROM kv_hyperloglog WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+			key,
+		).Scan(&registers)
+		if err == pgx.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		hll := HyperLogLogFromBytes(registers)
+		merged.Merge(hll)
+	}
+
+	// Save merged HLL to dest
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_hyperloglog (key, registers) VALUES ($1, $2)
+		 ON CONFLICT (key) DO UPDATE SET registers = $2`,
+		destKey, merged.ToBytes(),
+	)
+	if err != nil {
+		return err
+	}
+
+	// Update metadata
+	return o.setMeta(ctx, q, destKey, "hyperloglog", nil)
 }
 
 // ============== Server Commands ==============
