@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13] - 2026-02-01
+
+### Added
+- **Distributed cache invalidation** via PostgreSQL LISTEN/NOTIFY
+  - All cache writes broadcast invalidations to all postkeys instances
+  - Enables safe multi-pod deployments with caching enabled
+  - Near-instant cache coherency across instances (millisecond latency)
+- Cache invalidator listens on `postkeys_cache_invalidate` channel
+
+### Changed
+- Default cache TTL increased from 250ms to 5s (safe with distributed invalidation)
+- Helm chart cache documentation updated to reflect distributed invalidation support
+
 ## [0.11] - 2026-02-01
 
 ### Added

@@ -198,9 +198,10 @@ metrics:
 # Cache configuration (for string GET operations)
 cache:
   # Enable in-memory cache (opt-in, disabled by default)
-  # WARNING: In multi-pod deployments, cached data may be stale for up to TTL duration
+  # Cache invalidation is broadcast across all pods via PostgreSQL LISTEN/NOTIFY
   enabled: false
-  # Cache TTL - how long to cache values (e.g., "100ms", "250ms", "1s")
-  ttl: "250ms"
+  # Cache TTL - how long to cache values (e.g., "100ms", "1s", "5s")
+  # With distributed invalidation, longer TTLs are safe and improve performance
+  ttl: "5s"
   # Maximum number of cached entries (0 = unlimited)
   maxSize: 10000

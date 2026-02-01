@@ -1,0 +1,190 @@
+// Package cache provides an in-memory TTL cache with distributed invalidation.
+package cache
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// PostgreSQL channel for cache invalidation
+const cacheInvalidateChannel = "postkeys_cache_invalidate"
+
+// invalidationPayload represents the JSON payload for cache invalidation
+type invalidationPayload struct {
+	Keys  []string `json:"keys,omitempty"`
+	Flush bool     `json:"flush,omitempty"`
+}
+
+// Invalidator broadcasts cache invalidations across instances using PostgreSQL LISTEN/NOTIFY
+type Invalidator struct {
+	pool         *pgxpool.Pool
+	connStr      string
+	listenerConn *pgx.Conn
+
+	cache  *Cache
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	debug  bool
+}
+
+// NewInvalidator creates a new cache invalidator
+func NewInvalidator(pool *pgxpool.Pool, connStr string, cache *Cache) *Invalidator {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Invalidator{
+		pool:    pool,
+		connStr: connStr,
+		cache:   cache,
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+}
+
+// SetDebug enables debug logging
+func (inv *Invalidator) SetDebug(debug bool) {
+	inv.debug = debug
+}
+
+// Start initializes the invalidator and starts listening for notifications
+func (inv *Invalidator) Start(ctx context.Context) error {
+	conn, err := pgx.Connect(ctx, inv.connStr)
+	if err != nil {
+		return fmt.Errorf("failed to create listener connection: %w", err)
+	}
+	inv.listenerConn = conn
+
+	// Start listening on the cache invalidation channel
+	_, err = conn.Exec(ctx, fmt.Sprintf("LISTEN %s", cacheInvalidateChannel))
+	if err != nil {
+		conn.Close(ctx)
+		return fmt.Errorf("failed to LISTEN: %w", err)
+	}
+
+	inv.wg.Add(1)
+	go inv.listenLoop()
+
+	if inv.debug {
+		log.Printf("[DEBUG] Cache invalidator started, listening on %s", cacheInvalidateChannel)
+	}
+
+	return nil
+}
+
+// Stop gracefully stops the invalidator
+func (inv *Invalidator) Stop() {
+	inv.cancel()
+	inv.wg.Wait()
+
+	if inv.listenerConn != nil {
+		inv.listenerConn.Close(context.Background())
+	}
+}
+
+// InvalidateKey broadcasts a key invalidation to all instances
+func (inv *Invalidator) InvalidateKey(ctx context.Context, key string) error {
+	return inv.InvalidateKeys(ctx, key)
+}
+
+// InvalidateKeys broadcasts multiple key invalidations to all instances
+func (inv *Invalidator) InvalidateKeys(ctx context.Context, keys ...string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	payload := invalidationPayload{Keys: keys}
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal invalidation payload: %w", err)
+	}
+
+	_, err = inv.pool.Exec(ctx, "SELECT pg_notify($1, $2)", cacheInvalidateChannel, string(jsonBytes))
+	if err != nil {
+		return fmt.Errorf("failed to notify cache invalidation: %w", err)
+	}
+
+	if inv.debug {
+		log.Printf("[DEBUG] Broadcast cache invalidation for keys: %v", keys)
+	}
+
+	return nil
+}
+
+// InvalidateFlush broadcasts a flush (clear all) to all instances
+func (inv *Invalidator) InvalidateFlush(ctx context.Context) error {
+	payload := invalidationPayload{Flush: true}
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal flush payload: %w", err)
+	}
+
+	_, err = inv.pool.Exec(ctx, "SELECT pg_notify($1, $2)", cacheInvalidateChannel, string(jsonBytes))
+	if err != nil {
+		return fmt.Errorf("failed to notify cache flush: %w", err)
+	}
+
+	if inv.debug {
+		log.Printf("[DEBUG] Broadcast cache flush")
+	}
+
+	return nil
+}
+
+// listenLoop continuously listens for PostgreSQL notifications
+func (inv *Invalidator) listenLoop() {
+	defer inv.wg.Done()
+
+	for {
+		select {
+		case <-inv.ctx.Done():
+			return
+		default:
+		}
+
+		// Wait for notification with a timeout for graceful shutdown
+		ctx, cancel := context.WithTimeout(inv.ctx, 5*time.Second)
+		notification, err := inv.listenerConn.WaitForNotification(ctx)
+		cancel()
+
+		if err != nil {
+			if inv.ctx.Err() != nil {
+				return
+			}
+			continue
+		}
+
+		// Process the invalidation
+		inv.processNotification(notification.Payload)
+	}
+}
+
+// processNotification handles an incoming invalidation notification
+func (inv *Invalidator) processNotification(payload string) {
+	var msg invalidationPayload
+	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
+		log.Printf("Warning: failed to parse cache invalidation payload: %v", err)
+		return
+	}
+
+	if msg.Flush {
+		inv.cache.Flush()
+		if inv.debug {
+			log.Printf("[DEBUG] Cache flushed via distributed invalidation")
+		}
+		return
+	}
+
+	for _, key := range msg.Keys {
+		inv.cache.Delete(key)
+	}
+
+	if inv.debug && len(msg.Keys) > 0 {
+		log.Printf("[DEBUG] Cache invalidated %d keys via distributed invalidation", len(msg.Keys))
+	}
+}

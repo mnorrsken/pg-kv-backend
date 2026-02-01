@@ -113,16 +113,19 @@ The optional in-memory cache reduces PostgreSQL load for read-heavy workloads by
 
 ```bash
 export CACHE_ENABLED=true
-export CACHE_TTL=250ms
+export CACHE_TTL=5s
 export CACHE_MAX_SIZE=10000
 ```
 
-**Important considerations:**
+**Features:**
 - Cache is **opt-in** and disabled by default
 - Only caches string `GET` operations (hashes, lists, sets are not cached)
-- In **multi-pod deployments**, cached data may be stale for up to TTL duration
-- Writes (`SET`, `DEL`, etc.) invalidate the local cache immediately
+- **Distributed invalidation** via PostgreSQL LISTEN/NOTIFY ensures cache consistency across pods
+- Writes (`SET`, `DEL`, etc.) broadcast invalidations to all instances immediately
 - Monitor cache effectiveness with `postkeys_cache_hits_total` and `postkeys_cache_misses_total` metrics
+
+**Multi-pod deployments:**
+With distributed cache invalidation, all postkeys instances share cache coherency. When any instance writes a key, all instances invalidate that key from their local caches within milliseconds. This allows using longer cache TTLs (e.g., 5-30 seconds) while maintaining consistency.
 
 ### Tracing
 
@@ -358,10 +361,10 @@ The following table lists the configurable parameters of the postkeys chart and 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `cache.enabled` | Enable in-memory cache (opt-in) | `false` |
-| `cache.ttl` | Cache TTL duration | `250ms` |
+| `cache.ttl` | Cache TTL duration | `5s` |
 | `cache.maxSize` | Maximum number of cached entries | `10000` |
 
-> **Note:** In multi-pod deployments, cached data may be stale for up to TTL duration.
+> **Note:** Cache invalidations are broadcast across all pods via PostgreSQL LISTEN/NOTIFY, ensuring cache coherency in multi-pod deployments.
 
 #### Debug Configuration
 

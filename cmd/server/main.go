@@ -45,12 +45,24 @@ func main() {
 
 	// Wrap with cache if enabled
 	var backend storage.Backend = store
+	var cachedStore *cache.CachedStore
+	var cacheInvalidator *cache.Invalidator
 	if cfg.CacheEnabled {
-		backend = cache.NewCachedStore(store, cache.Config{
+		cachedStore = cache.NewCachedStore(store, cache.Config{
 			TTL:     cfg.CacheTTL,
 			MaxSize: cfg.CacheMaxSize,
 		})
-		log.Printf("In-memory cache enabled (TTL: %v, MaxSize: %d)", cfg.CacheTTL, cfg.CacheMaxSize)
+		backend = cachedStore
+
+		// Set up distributed cache invalidation
+		cacheInvalidator = cache.NewInvalidator(store.Pool(), store.ConnString(), cachedStore.GetCache())
+		cacheInvalidator.SetDebug(cfg.Debug)
+		if err := cacheInvalidator.Start(ctx); err != nil {
+			log.Fatalf("Failed to start cache invalidator: %v", err)
+		}
+		cachedStore.SetInvalidator(cacheInvalidator)
+
+		log.Printf("In-memory cache enabled with distributed invalidation (TTL: %v, MaxSize: %d)", cfg.CacheTTL, cfg.CacheMaxSize)
 	}
 
 	// Start metrics server
@@ -132,6 +144,12 @@ func main() {
 
 		log.Println("Stopping metrics server...")
 		metricsSrv.Stop()
+
+		// Stop cache invalidator if running
+		if cacheInvalidator != nil {
+			log.Println("Stopping cache invalidator...")
+			cacheInvalidator.Stop()
+		}
 
 		log.Println("Closing database connections...")
 		backend.Close()

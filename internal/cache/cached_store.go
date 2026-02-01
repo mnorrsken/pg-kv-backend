@@ -10,8 +10,9 @@ import (
 
 // CachedStore wraps a storage.Backend with an in-memory cache
 type CachedStore struct {
-	backend storage.Backend
-	cache   *Cache
+	backend     storage.Backend
+	cache       *Cache
+	invalidator *Invalidator
 }
 
 // NewCachedStore creates a new cached storage wrapper
@@ -22,10 +23,44 @@ func NewCachedStore(backend storage.Backend, cfg Config) *CachedStore {
 	}
 }
 
+// SetInvalidator sets the distributed cache invalidator
+func (s *CachedStore) SetInvalidator(inv *Invalidator) {
+	s.invalidator = inv
+}
+
+// GetCache returns the underlying cache (for use with Invalidator)
+func (s *CachedStore) GetCache() *Cache {
+	return s.cache
+}
+
 // Close closes the cached store and underlying backend
 func (s *CachedStore) Close() {
 	s.cache.Stop()
 	s.backend.Close()
+}
+
+// invalidate invalidates a key locally and broadcasts to other instances
+func (s *CachedStore) invalidate(ctx context.Context, key string) {
+	s.cache.Invalidate(key)
+	if s.invalidator != nil {
+		s.invalidator.InvalidateKey(ctx, key)
+	}
+}
+
+// invalidateMulti invalidates multiple keys locally and broadcasts to other instances
+func (s *CachedStore) invalidateMulti(ctx context.Context, keys []string) {
+	s.cache.DeleteMulti(keys)
+	if s.invalidator != nil {
+		s.invalidator.InvalidateKeys(ctx, keys...)
+	}
+}
+
+// flush clears the cache locally and broadcasts to other instances
+func (s *CachedStore) flush(ctx context.Context) {
+	s.cache.Flush()
+	if s.invalidator != nil {
+		s.invalidator.InvalidateFlush(ctx)
+	}
 }
 
 // ============== String Commands (with caching) ==============
@@ -57,8 +92,8 @@ func (s *CachedStore) Set(ctx context.Context, key, value string, ttl time.Durat
 	if err != nil {
 		return err
 	}
-	// Invalidate cache on write (write-through invalidation)
-	s.cache.Invalidate(key)
+	// Invalidate cache on write (distributed write-through invalidation)
+	s.invalidate(ctx, key)
 	return nil
 }
 
@@ -68,7 +103,7 @@ func (s *CachedStore) SetNX(ctx context.Context, key, value string) (bool, error
 		return false, err
 	}
 	if ok {
-		s.cache.Invalidate(key)
+		s.invalidate(ctx, key)
 	}
 	return ok, nil
 }
@@ -83,10 +118,12 @@ func (s *CachedStore) MSet(ctx context.Context, pairs map[string]string) error {
 	if err != nil {
 		return err
 	}
-	// Invalidate all keys
+	// Invalidate all keys (distributed)
+	keys := make([]string, 0, len(pairs))
 	for key := range pairs {
-		s.cache.Invalidate(key)
+		keys = append(keys, key)
 	}
+	s.invalidateMulti(ctx, keys)
 	return nil
 }
 
@@ -95,7 +132,7 @@ func (s *CachedStore) Incr(ctx context.Context, key string, delta int64) (int64,
 	if err != nil {
 		return 0, err
 	}
-	s.cache.Invalidate(key)
+	s.invalidate(ctx, key)
 	return result, nil
 }
 
@@ -104,7 +141,7 @@ func (s *CachedStore) Append(ctx context.Context, key, value string) (int64, err
 	if err != nil {
 		return 0, err
 	}
-	s.cache.Invalidate(key)
+	s.invalidate(ctx, key)
 	return result, nil
 }
 
@@ -113,13 +150,21 @@ func (s *CachedStore) GetRange(ctx context.Context, key string, start, end int64
 }
 
 func (s *CachedStore) SetRange(ctx context.Context, key string, offset int64, value string) (int64, error) {
-	s.cache.Invalidate(key)
-	return s.backend.SetRange(ctx, key, offset, value)
+	result, err := s.backend.SetRange(ctx, key, offset, value)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
 }
 
 func (s *CachedStore) BitField(ctx context.Context, key string, ops []storage.BitFieldOp) ([]int64, error) {
-	s.cache.Invalidate(key)
-	return s.backend.BitField(ctx, key, ops)
+	result, err := s.backend.BitField(ctx, key, ops)
+	if err != nil {
+		return nil, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
 }
 
 func (s *CachedStore) StrLen(ctx context.Context, key string) (int64, error) {
@@ -127,23 +172,39 @@ func (s *CachedStore) StrLen(ctx context.Context, key string) (int64, error) {
 }
 
 func (s *CachedStore) GetEx(ctx context.Context, key string, ttl time.Duration, persist bool) (string, bool, error) {
-	s.cache.Invalidate(key) // TTL change
-	return s.backend.GetEx(ctx, key, ttl, persist)
+	result, found, err := s.backend.GetEx(ctx, key, ttl, persist)
+	if err != nil {
+		return "", false, err
+	}
+	s.invalidate(ctx, key) // TTL change
+	return result, found, nil
 }
 
 func (s *CachedStore) GetDel(ctx context.Context, key string) (string, bool, error) {
-	s.cache.Invalidate(key)
-	return s.backend.GetDel(ctx, key)
+	result, found, err := s.backend.GetDel(ctx, key)
+	if err != nil {
+		return "", false, err
+	}
+	s.invalidate(ctx, key)
+	return result, found, nil
 }
 
 func (s *CachedStore) GetSet(ctx context.Context, key, value string) (string, bool, error) {
-	s.cache.Invalidate(key)
-	return s.backend.GetSet(ctx, key, value)
+	result, found, err := s.backend.GetSet(ctx, key, value)
+	if err != nil {
+		return "", false, err
+	}
+	s.invalidate(ctx, key)
+	return result, found, nil
 }
 
 func (s *CachedStore) IncrByFloat(ctx context.Context, key string, delta float64) (float64, error) {
-	s.cache.Invalidate(key)
-	return s.backend.IncrByFloat(ctx, key, delta)
+	result, err := s.backend.IncrByFloat(ctx, key, delta)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
 }
 
 // ============== Key Commands ==============
@@ -153,7 +214,7 @@ func (s *CachedStore) Del(ctx context.Context, keys []string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	s.cache.DeleteMulti(keys)
+	s.invalidateMulti(ctx, keys)
 	return count, nil
 }
 
@@ -166,8 +227,8 @@ func (s *CachedStore) Expire(ctx context.Context, key string, ttl time.Duration)
 	if err != nil {
 		return false, err
 	}
-	// Invalidate on TTL change
-	s.cache.Invalidate(key)
+	// Invalidate on TTL change (distributed)
+	s.invalidate(ctx, key)
 	return ok, nil
 }
 
@@ -184,7 +245,7 @@ func (s *CachedStore) Persist(ctx context.Context, key string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	s.cache.Invalidate(key)
+	s.invalidate(ctx, key)
 	return ok, nil
 }
 
@@ -201,8 +262,7 @@ func (s *CachedStore) Rename(ctx context.Context, oldKey, newKey string) error {
 	if err != nil {
 		return err
 	}
-	s.cache.Invalidate(oldKey)
-	s.cache.Invalidate(newKey)
+	s.invalidateMulti(ctx, []string{oldKey, newKey})
 	return nil
 }
 
@@ -245,8 +305,12 @@ func (s *CachedStore) HLen(ctx context.Context, key string) (int64, error) {
 }
 
 func (s *CachedStore) HIncrBy(ctx context.Context, key, field string, increment int64) (int64, error) {
-	s.cache.Delete(key)
-	return s.backend.HIncrBy(ctx, key, field, increment)
+	result, err := s.backend.HIncrBy(ctx, key, field, increment)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
 }
 
 // ============== List Commands (pass-through, no caching) ==============
@@ -328,46 +392,77 @@ func (s *CachedStore) ZRangeByScore(ctx context.Context, key string, min, max fl
 }
 
 func (s *CachedStore) ZRemRangeByScore(ctx context.Context, key string, min, max float64) (int64, error) {
-	s.cache.Delete(key)
-	return s.backend.ZRemRangeByScore(ctx, key, min, max)
+	result, err := s.backend.ZRemRangeByScore(ctx, key, min, max)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
 }
 
 func (s *CachedStore) ZRemRangeByRank(ctx context.Context, key string, start, stop int64) (int64, error) {
-	s.cache.Delete(key)
-	return s.backend.ZRemRangeByRank(ctx, key, start, stop)
+	result, err := s.backend.ZRemRangeByRank(ctx, key, start, stop)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
 }
 
 func (s *CachedStore) ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error) {
-	s.cache.Delete(key)
-	return s.backend.ZIncrBy(ctx, key, increment, member)
+	result, err := s.backend.ZIncrBy(ctx, key, increment, member)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
 }
 
 func (s *CachedStore) ZPopMin(ctx context.Context, key string, count int64) ([]storage.ZMember, error) {
-	s.cache.Delete(key)
-	return s.backend.ZPopMin(ctx, key, count)
+	result, err := s.backend.ZPopMin(ctx, key, count)
+	if err != nil {
+		return nil, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
 }
 
 func (s *CachedStore) LRem(ctx context.Context, key string, count int64, element string) (int64, error) {
-	s.cache.Delete(key)
-	return s.backend.LRem(ctx, key, count, element)
+	result, err := s.backend.LRem(ctx, key, count, element)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
 }
 
 func (s *CachedStore) LTrim(ctx context.Context, key string, start, stop int64) error {
-	s.cache.Delete(key)
-	return s.backend.LTrim(ctx, key, start, stop)
+	err := s.backend.LTrim(ctx, key, start, stop)
+	if err != nil {
+		return err
+	}
+	s.invalidate(ctx, key)
+	return nil
 }
 
 func (s *CachedStore) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
-	s.cache.Delete(source)
-	s.cache.Delete(destination)
-	return s.backend.RPopLPush(ctx, source, destination)
+	result, found, err := s.backend.RPopLPush(ctx, source, destination)
+	if err != nil {
+		return "", false, err
+	}
+	s.invalidateMulti(ctx, []string{source, destination})
+	return result, found, nil
 }
 
 // ============== HyperLogLog Commands ==============
 
 func (s *CachedStore) PFAdd(ctx context.Context, key string, elements []string) (int64, error) {
-	s.cache.Delete(key)
-	return s.backend.PFAdd(ctx, key, elements)
+	result, err := s.backend.PFAdd(ctx, key, elements)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
 }
 
 func (s *CachedStore) PFCount(ctx context.Context, keys []string) (int64, error) {
@@ -375,8 +470,12 @@ func (s *CachedStore) PFCount(ctx context.Context, keys []string) (int64, error)
 }
 
 func (s *CachedStore) PFMerge(ctx context.Context, destKey string, sourceKeys []string) error {
-	s.cache.Delete(destKey)
-	return s.backend.PFMerge(ctx, destKey, sourceKeys)
+	err := s.backend.PFMerge(ctx, destKey, sourceKeys)
+	if err != nil {
+		return err
+	}
+	s.invalidate(ctx, destKey)
+	return nil
 }
 
 // ============== Server Commands ==============
@@ -390,7 +489,7 @@ func (s *CachedStore) FlushDB(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.cache.Flush()
+	s.flush(ctx)
 	return nil
 }
 
