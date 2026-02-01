@@ -752,3 +752,182 @@ func TestPgAuthentication(t *testing.T) {
 		t.Fatalf("SET with correct password failed: %v", err)
 	}
 }
+
+// ============== PostgreSQL Transaction Tests ==============
+
+func TestPgMultiExecBasic(t *testing.T) {
+	ts := newPgTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Use pipeline with TxPipeline for MULTI/EXEC
+	pipe := ts.client.TxPipeline()
+	
+	setCmd := pipe.Set(ctx, "pg_tx_key1", "value1", 0)
+	setCmd2 := pipe.Set(ctx, "pg_tx_key2", "value2", 0)
+	getCmd := pipe.Get(ctx, "pg_tx_key1")
+	
+	// Execute the transaction
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("EXEC failed: %v", err)
+	}
+	
+	// Check results
+	if setCmd.Err() != nil {
+		t.Errorf("SET pg_tx_key1 in transaction failed: %v", setCmd.Err())
+	}
+	if setCmd2.Err() != nil {
+		t.Errorf("SET pg_tx_key2 in transaction failed: %v", setCmd2.Err())
+	}
+	if getCmd.Err() != nil {
+		t.Errorf("GET pg_tx_key1 in transaction failed: %v", getCmd.Err())
+	}
+	if getCmd.Val() != "value1" {
+		t.Errorf("Expected value1, got %s", getCmd.Val())
+	}
+	
+	// Verify keys exist outside transaction
+	val, err := ts.client.Get(ctx, "pg_tx_key1").Result()
+	if err != nil {
+		t.Errorf("GET pg_tx_key1 after transaction failed: %v", err)
+	}
+	if val != "value1" {
+		t.Errorf("Expected value1 after transaction, got %s", val)
+	}
+}
+
+func TestPgMultiExecIncr(t *testing.T) {
+	ts := newPgTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set initial value
+	err := ts.client.Set(ctx, "pg_counter", "10", 0).Err()
+	if err != nil {
+		t.Fatalf("Initial SET failed: %v", err)
+	}
+
+	// Use transaction to increment multiple times
+	pipe := ts.client.TxPipeline()
+	
+	incr1 := pipe.Incr(ctx, "pg_counter")
+	incr2 := pipe.Incr(ctx, "pg_counter")
+	incr3 := pipe.Incr(ctx, "pg_counter")
+	
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("EXEC failed: %v", err)
+	}
+	
+	// Check intermediate results
+	if incr1.Val() != 11 {
+		t.Errorf("Expected 11 after first INCR, got %d", incr1.Val())
+	}
+	if incr2.Val() != 12 {
+		t.Errorf("Expected 12 after second INCR, got %d", incr2.Val())
+	}
+	if incr3.Val() != 13 {
+		t.Errorf("Expected 13 after third INCR, got %d", incr3.Val())
+	}
+	
+	// Verify final value
+	val, err := ts.client.Get(ctx, "pg_counter").Result()
+	if err != nil {
+		t.Errorf("GET pg_counter after transaction failed: %v", err)
+	}
+	if val != "13" {
+		t.Errorf("Expected 13 after transaction, got %s", val)
+	}
+}
+
+func TestPgMultiExecMixed(t *testing.T) {
+	ts := newPgTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	pipe := ts.client.TxPipeline()
+	
+	// Mix different command types
+	setCmd := pipe.Set(ctx, "pg_str_key", "str_value", 0)
+	hsetCmd := pipe.HSet(ctx, "pg_hash_key", "field", "hash_value")
+	lpushCmd := pipe.LPush(ctx, "pg_list_key", "list_value")
+	saddCmd := pipe.SAdd(ctx, "pg_set_key", "set_value")
+	
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("EXEC failed: %v", err)
+	}
+	
+	if setCmd.Err() != nil {
+		t.Errorf("SET failed: %v", setCmd.Err())
+	}
+	if hsetCmd.Err() != nil {
+		t.Errorf("HSET failed: %v", hsetCmd.Err())
+	}
+	if lpushCmd.Err() != nil {
+		t.Errorf("LPUSH failed: %v", lpushCmd.Err())
+	}
+	if saddCmd.Err() != nil {
+		t.Errorf("SADD failed: %v", saddCmd.Err())
+	}
+	
+	// Verify all types exist
+	strType, _ := ts.client.Type(ctx, "pg_str_key").Result()
+	hashType, _ := ts.client.Type(ctx, "pg_hash_key").Result()
+	listType, _ := ts.client.Type(ctx, "pg_list_key").Result()
+	setType, _ := ts.client.Type(ctx, "pg_set_key").Result()
+	
+	if strType != "string" {
+		t.Errorf("Expected string type, got %s", strType)
+	}
+	if hashType != "hash" {
+		t.Errorf("Expected hash type, got %s", hashType)
+	}
+	if listType != "list" {
+		t.Errorf("Expected list type, got %s", listType)
+	}
+	if setType != "set" {
+		t.Errorf("Expected set type, got %s", setType)
+	}
+}
+
+func TestPgMultiExecWithHash(t *testing.T) {
+	ts := newPgTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	pipe := ts.client.TxPipeline()
+	
+	hsetCmd := pipe.HSet(ctx, "pg_myhash", "field1", "value1")
+	hsetCmd2 := pipe.HSet(ctx, "pg_myhash", "field2", "value2")
+	hgetCmd := pipe.HGet(ctx, "pg_myhash", "field1")
+	
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		t.Fatalf("EXEC failed: %v", err)
+	}
+	
+	if hsetCmd.Err() != nil {
+		t.Errorf("HSET field1 failed: %v", hsetCmd.Err())
+	}
+	if hsetCmd2.Err() != nil {
+		t.Errorf("HSET field2 failed: %v", hsetCmd2.Err())
+	}
+	if hgetCmd.Val() != "value1" {
+		t.Errorf("Expected value1, got %s", hgetCmd.Val())
+	}
+	
+	// Verify outside transaction
+	all, err := ts.client.HGetAll(ctx, "pg_myhash").Result()
+	if err != nil {
+		t.Errorf("HGETALL after transaction failed: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("Expected 2 fields in hash, got %d", len(all))
+	}
+}

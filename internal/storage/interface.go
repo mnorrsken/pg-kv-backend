@@ -5,8 +5,34 @@ import (
 	"time"
 )
 
-// Backend defines the interface for Redis-compatible storage operations
-type Backend interface {
+// KeyType represents the type of a Redis key
+type KeyType string
+
+const (
+	TypeString KeyType = "string"
+	TypeHash   KeyType = "hash"
+	TypeList   KeyType = "list"
+	TypeSet    KeyType = "set"
+	TypeZSet   KeyType = "zset"
+	TypeNone   KeyType = "none"
+)
+
+// ZMember represents a sorted set member with its score
+type ZMember struct {
+	Member string
+	Score  float64
+}
+
+// BitFieldOp represents a BITFIELD operation (GET, SET, INCRBY)
+type BitFieldOp struct {
+	OpType   string // "GET", "SET", "INCRBY"
+	Encoding string // e.g., "u8", "i16", "u32"
+	Offset   int64  // bit offset (can use # prefix for type-width multiplier)
+	Value    int64  // for SET and INCRBY
+}
+
+// Operations defines the common storage operations available in both regular and transaction contexts
+type Operations interface {
 	// String commands
 	Get(ctx context.Context, key string) (string, bool, error)
 	Set(ctx context.Context, key, value string, ttl time.Duration) error
@@ -14,7 +40,15 @@ type Backend interface {
 	MGet(ctx context.Context, keys []string) ([]interface{}, error)
 	MSet(ctx context.Context, pairs map[string]string) error
 	Incr(ctx context.Context, key string, delta int64) (int64, error)
+	IncrByFloat(ctx context.Context, key string, delta float64) (float64, error)
 	Append(ctx context.Context, key, value string) (int64, error)
+	GetRange(ctx context.Context, key string, start, end int64) (string, error)
+	SetRange(ctx context.Context, key string, offset int64, value string) (int64, error)
+	StrLen(ctx context.Context, key string) (int64, error)
+	GetEx(ctx context.Context, key string, ttl time.Duration, persist bool) (string, bool, error)
+	GetDel(ctx context.Context, key string) (string, bool, error)
+	GetSet(ctx context.Context, key, value string) (string, bool, error)
+	BitField(ctx context.Context, key string, ops []BitFieldOp) ([]int64, error)
 
 	// Key commands
 	Del(ctx context.Context, keys []string) (int64, error)
@@ -37,6 +71,7 @@ type Backend interface {
 	HKeys(ctx context.Context, key string) ([]string, error)
 	HVals(ctx context.Context, key string) ([]string, error)
 	HLen(ctx context.Context, key string) (int64, error)
+	HIncrBy(ctx context.Context, key, field string, increment int64) (int64, error)
 
 	// List commands
 	LPush(ctx context.Context, key string, values []string) (int64, error)
@@ -46,6 +81,9 @@ type Backend interface {
 	LLen(ctx context.Context, key string) (int64, error)
 	LRange(ctx context.Context, key string, start, stop int64) ([]string, error)
 	LIndex(ctx context.Context, key string, index int64) (string, bool, error)
+	LRem(ctx context.Context, key string, count int64, element string) (int64, error)
+	LTrim(ctx context.Context, key string, start, stop int64) error
+	RPopLPush(ctx context.Context, source, destination string) (string, bool, error)
 
 	// Set commands
 	SAdd(ctx context.Context, key string, members []string) (int64, error)
@@ -54,12 +92,48 @@ type Backend interface {
 	SIsMember(ctx context.Context, key, member string) (bool, error)
 	SCard(ctx context.Context, key string) (int64, error)
 
+	// Sorted set commands
+	ZAdd(ctx context.Context, key string, members []ZMember) (int64, error)
+	ZRange(ctx context.Context, key string, start, stop int64, withScores bool) ([]ZMember, error)
+	ZRangeByScore(ctx context.Context, key string, min, max float64, withScores bool, offset, count int64) ([]ZMember, error)
+	ZScore(ctx context.Context, key, member string) (float64, bool, error)
+	ZRem(ctx context.Context, key string, members []string) (int64, error)
+	ZRemRangeByScore(ctx context.Context, key string, min, max float64) (int64, error)
+	ZRemRangeByRank(ctx context.Context, key string, start, stop int64) (int64, error)
+	ZCard(ctx context.Context, key string) (int64, error)
+	ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error)
+	ZPopMin(ctx context.Context, key string, count int64) ([]ZMember, error)
+
+	// HyperLogLog commands
+	PFAdd(ctx context.Context, key string, elements []string) (int64, error)
+	PFCount(ctx context.Context, keys []string) (int64, error)
+	PFMerge(ctx context.Context, destKey string, sourceKeys []string) error
+
 	// Server commands
 	DBSize(ctx context.Context) (int64, error)
+}
+
+// Backend extends Operations with lifecycle and transaction support
+type Backend interface {
+	Operations
+
+	// Server commands (not available in transactions)
 	FlushDB(ctx context.Context) error
+
+	// Transaction support
+	BeginTx(ctx context.Context) (Transaction, error)
 
 	// Lifecycle
 	Close()
+}
+
+// Transaction extends Operations with commit/rollback
+type Transaction interface {
+	Operations
+
+	// Transaction control
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
 }
 
 // Ensure Store implements Backend

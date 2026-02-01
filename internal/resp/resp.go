@@ -32,12 +32,13 @@ const (
 
 // Value represents a RESP value
 type Value struct {
-	Type  Type
-	Str   string
-	Num   int64
-	Bulk  string
-	Array []Value
-	Null  bool
+	Type    Type
+	Str     string
+	Num     int64
+	Bulk    string
+	Array   []Value
+	MapData map[string]string // For RESP3 Map type
+	Null    bool
 }
 
 // Reader reads RESP values from an io.Reader
@@ -222,6 +223,10 @@ func (w *Writer) WriteValue(v Value) error {
 		} else {
 			err = w.WriteArray(v.Array)
 		}
+	case Map:
+		err = w.WriteMap(v.MapData)
+	case Push:
+		err = w.WritePush(v.Array)
 	default:
 		err = fmt.Errorf("unknown RESP type: %c", v.Type)
 	}
@@ -277,6 +282,20 @@ func (w *Writer) WriteArray(arr []Value) error {
 	return nil
 }
 
+// WritePush writes a RESP3 Push (out-of-band data) value
+// Push is used for pub/sub messages in RESP3 - it's like an Array but with '>' prefix
+func (w *Writer) WritePush(arr []Value) error {
+	if _, err := w.writer.WriteString(">" + strconv.Itoa(len(arr)) + "\r\n"); err != nil {
+		return err
+	}
+	for _, v := range arr {
+		if err := w.WriteValue(v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // WriteStringArray writes an array of strings as bulk strings
 func (w *Writer) WriteStringArray(arr []string) error {
 	if _, err := w.writer.WriteString("*" + strconv.Itoa(len(arr)) + "\r\n"); err != nil {
@@ -290,14 +309,36 @@ func (w *Writer) WriteStringArray(arr []string) error {
 	return nil
 }
 
+// WriteMap writes a RESP3 Map (hash) value
+func (w *Writer) WriteMap(m map[string]string) error {
+	if _, err := w.writer.WriteString("%" + strconv.Itoa(len(m)) + "\r\n"); err != nil {
+		return err
+	}
+	for key, value := range m {
+		if err := w.WriteBulkString(key); err != nil {
+			return err
+		}
+		if err := w.WriteBulkString(value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // OK returns an OK simple string value
 func OK() Value {
 	return Value{Type: SimpleString, Str: "OK"}
 }
 
-// Err returns an error value
+// Err returns an error value with ERR prefix
 func Err(msg string) Value {
 	return Value{Type: Error, Str: "ERR " + msg}
+}
+
+// ErrCustom returns an error value with a custom prefix (no ERR prepended)
+// Use for errors like NOSCRIPT, WRONGTYPE, MOVED, etc.
+func ErrCustom(msg string) Value {
+	return Value{Type: Error, Str: msg}
 }
 
 // ErrWrongType returns a wrong type error
@@ -333,4 +374,9 @@ func Bulk(s string) Value {
 // Arr returns an array value
 func Arr(values ...Value) Value {
 	return Value{Type: Array, Array: values}
+}
+
+// MapVal returns a RESP3 Map value
+func MapVal(m map[string]string) Value {
+	return Value{Type: Map, MapData: m}
 }

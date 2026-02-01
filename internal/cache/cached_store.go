@@ -108,6 +108,44 @@ func (s *CachedStore) Append(ctx context.Context, key, value string) (int64, err
 	return result, nil
 }
 
+func (s *CachedStore) GetRange(ctx context.Context, key string, start, end int64) (string, error) {
+	return s.backend.GetRange(ctx, key, start, end)
+}
+
+func (s *CachedStore) SetRange(ctx context.Context, key string, offset int64, value string) (int64, error) {
+	s.cache.Invalidate(key)
+	return s.backend.SetRange(ctx, key, offset, value)
+}
+
+func (s *CachedStore) BitField(ctx context.Context, key string, ops []storage.BitFieldOp) ([]int64, error) {
+	s.cache.Invalidate(key)
+	return s.backend.BitField(ctx, key, ops)
+}
+
+func (s *CachedStore) StrLen(ctx context.Context, key string) (int64, error) {
+	return s.backend.StrLen(ctx, key)
+}
+
+func (s *CachedStore) GetEx(ctx context.Context, key string, ttl time.Duration, persist bool) (string, bool, error) {
+	s.cache.Invalidate(key) // TTL change
+	return s.backend.GetEx(ctx, key, ttl, persist)
+}
+
+func (s *CachedStore) GetDel(ctx context.Context, key string) (string, bool, error) {
+	s.cache.Invalidate(key)
+	return s.backend.GetDel(ctx, key)
+}
+
+func (s *CachedStore) GetSet(ctx context.Context, key, value string) (string, bool, error) {
+	s.cache.Invalidate(key)
+	return s.backend.GetSet(ctx, key, value)
+}
+
+func (s *CachedStore) IncrByFloat(ctx context.Context, key string, delta float64) (float64, error) {
+	s.cache.Invalidate(key)
+	return s.backend.IncrByFloat(ctx, key, delta)
+}
+
 // ============== Key Commands ==============
 
 func (s *CachedStore) Del(ctx context.Context, keys []string) (int64, error) {
@@ -206,6 +244,11 @@ func (s *CachedStore) HLen(ctx context.Context, key string) (int64, error) {
 	return s.backend.HLen(ctx, key)
 }
 
+func (s *CachedStore) HIncrBy(ctx context.Context, key, field string, increment int64) (int64, error) {
+	s.cache.Delete(key)
+	return s.backend.HIncrBy(ctx, key, field, increment)
+}
+
 // ============== List Commands (pass-through, no caching) ==============
 
 func (s *CachedStore) LPush(ctx context.Context, key string, values []string) (int64, error) {
@@ -258,6 +301,84 @@ func (s *CachedStore) SCard(ctx context.Context, key string) (int64, error) {
 	return s.backend.SCard(ctx, key)
 }
 
+// ============== Sorted Set Commands ==============
+
+func (s *CachedStore) ZAdd(ctx context.Context, key string, members []storage.ZMember) (int64, error) {
+	return s.backend.ZAdd(ctx, key, members)
+}
+
+func (s *CachedStore) ZRange(ctx context.Context, key string, start, stop int64, withScores bool) ([]storage.ZMember, error) {
+	return s.backend.ZRange(ctx, key, start, stop, withScores)
+}
+
+func (s *CachedStore) ZScore(ctx context.Context, key, member string) (float64, bool, error) {
+	return s.backend.ZScore(ctx, key, member)
+}
+
+func (s *CachedStore) ZRem(ctx context.Context, key string, members []string) (int64, error) {
+	return s.backend.ZRem(ctx, key, members)
+}
+
+func (s *CachedStore) ZCard(ctx context.Context, key string) (int64, error) {
+	return s.backend.ZCard(ctx, key)
+}
+
+func (s *CachedStore) ZRangeByScore(ctx context.Context, key string, min, max float64, withScores bool, offset, count int64) ([]storage.ZMember, error) {
+	return s.backend.ZRangeByScore(ctx, key, min, max, withScores, offset, count)
+}
+
+func (s *CachedStore) ZRemRangeByScore(ctx context.Context, key string, min, max float64) (int64, error) {
+	s.cache.Delete(key)
+	return s.backend.ZRemRangeByScore(ctx, key, min, max)
+}
+
+func (s *CachedStore) ZRemRangeByRank(ctx context.Context, key string, start, stop int64) (int64, error) {
+	s.cache.Delete(key)
+	return s.backend.ZRemRangeByRank(ctx, key, start, stop)
+}
+
+func (s *CachedStore) ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error) {
+	s.cache.Delete(key)
+	return s.backend.ZIncrBy(ctx, key, increment, member)
+}
+
+func (s *CachedStore) ZPopMin(ctx context.Context, key string, count int64) ([]storage.ZMember, error) {
+	s.cache.Delete(key)
+	return s.backend.ZPopMin(ctx, key, count)
+}
+
+func (s *CachedStore) LRem(ctx context.Context, key string, count int64, element string) (int64, error) {
+	s.cache.Delete(key)
+	return s.backend.LRem(ctx, key, count, element)
+}
+
+func (s *CachedStore) LTrim(ctx context.Context, key string, start, stop int64) error {
+	s.cache.Delete(key)
+	return s.backend.LTrim(ctx, key, start, stop)
+}
+
+func (s *CachedStore) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
+	s.cache.Delete(source)
+	s.cache.Delete(destination)
+	return s.backend.RPopLPush(ctx, source, destination)
+}
+
+// ============== HyperLogLog Commands ==============
+
+func (s *CachedStore) PFAdd(ctx context.Context, key string, elements []string) (int64, error) {
+	s.cache.Delete(key)
+	return s.backend.PFAdd(ctx, key, elements)
+}
+
+func (s *CachedStore) PFCount(ctx context.Context, keys []string) (int64, error) {
+	return s.backend.PFCount(ctx, keys)
+}
+
+func (s *CachedStore) PFMerge(ctx context.Context, destKey string, sourceKeys []string) error {
+	s.cache.Delete(destKey)
+	return s.backend.PFMerge(ctx, destKey, sourceKeys)
+}
+
 // ============== Server Commands ==============
 
 func (s *CachedStore) DBSize(ctx context.Context) (int64, error) {
@@ -271,6 +392,14 @@ func (s *CachedStore) FlushDB(ctx context.Context) error {
 	}
 	s.cache.Flush()
 	return nil
+}
+
+// ============== Transaction Support ==============
+
+// BeginTx starts a transaction on the underlying backend
+// Note: Transactions bypass the cache and operate directly on the backend
+func (s *CachedStore) BeginTx(ctx context.Context) (storage.Transaction, error) {
+	return s.backend.BeginTx(ctx)
 }
 
 // Ensure CachedStore implements Backend

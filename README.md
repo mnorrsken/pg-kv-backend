@@ -4,17 +4,75 @@ A Redis 7 API-compatible server that uses PostgreSQL as the backend storage.
 
 ## Features
 
-- Redis protocol (RESP3) compatible
+- Redis protocol compatible (RESP2 and RESP3)
 - PostgreSQL persistent storage
+- Full pub/sub support with RESP3 Push messages
+- Lua scripting support (EVAL/EVALSHA/SCRIPT)
+- Transaction support (MULTI/EXEC/DISCARD)
 - Supports common Redis commands:
-  - **String commands**: GET, SET, SETNX, SETEX, MGET, MSET, INCR, DECR, INCRBY, DECRBY, APPEND
-  - **Key commands**: DEL, EXISTS, EXPIRE, TTL, PTTL, PERSIST, KEYS, TYPE, RENAME
-  - **Hash commands**: HGET, HSET, HDEL, HGETALL, HMGET, HMSET, HEXISTS, HKEYS, HVALS, HLEN
-  - **List commands**: LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE, LINDEX
-  - **Set commands**: SADD, SREM, SMEMBERS, SISMEMBER, SCARD
+  - **String commands**: GET, SET, SETNX, SETEX, MGET, MSET, INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN, GETRANGE, SETRANGE, GETEX, GETDEL, GETSET, BITFIELD
+  - **Key commands**: DEL, UNLINK, EXISTS, EXPIRE, TTL, PTTL, PERSIST, KEYS, TYPE, RENAME, SCAN
+  - **Hash commands**: HGET, HSET, HDEL, HGETALL, HMGET, HMSET, HEXISTS, HKEYS, HVALS, HLEN, HSCAN
+  - **List commands**: LPUSH, RPUSH, LPOP, RPOP, BLPOP, BRPOP, LLEN, LRANGE, LINDEX, LREM, LTRIM, RPOPLPUSH
+  - **Set commands**: SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SSCAN
+  - **Sorted set commands**: ZADD, ZRANGE (with BYSCORE/REV/LIMIT), ZRANGEBYSCORE, ZSCORE, ZREM, ZREMRANGEBYSCORE, ZREMRANGEBYRANK, ZCARD, ZINCRBY, ZPOPMIN
+  - **HyperLogLog commands**: PFADD, PFCOUNT, PFMERGE
+  - **Pub/Sub commands**: SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH
+  - **Transaction commands**: MULTI, EXEC, DISCARD, WATCH, UNWATCH
+  - **Scripting commands**: EVAL, EVALSHA, SCRIPT LOAD, SCRIPT EXISTS, SCRIPT FLUSH
   - **Connection commands**: PING, ECHO, AUTH, QUIT, HELLO
   - **Client commands**: CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT SETINFO, CLIENT INFO, CLIENT LIST
-  - **Server commands**: INFO, DBSIZE, FLUSHDB, FLUSHALL, COMMAND
+  - **Server commands**: INFO, DBSIZE, FLUSHDB, FLUSHALL, COMMAND, CLUSTER (standalone mode)
+
+## Protocol Support
+
+postkeys supports both RESP2 and RESP3 protocols:
+
+- **RESP2**: Default protocol for backwards compatibility
+- **RESP3**: Modern protocol with native types (Maps, Sets, Booleans, etc.)
+
+Clients can negotiate the protocol version using the `HELLO` command:
+
+```bash
+# Upgrade to RESP3
+HELLO 3
+
+# RESP3 benefits:
+# - HGETALL returns native Map type instead of flat array
+# - Pub/sub messages use Push type (out-of-band), allowing commands while subscribed
+# - Better type information for clients
+```
+
+## Lua Scripting
+
+postkeys supports Lua scripting with `EVAL`, `EVALSHA`, and `SCRIPT` commands, enabling atomic operations and complex logic:
+
+```bash
+# Execute a script directly
+EVAL "return redis.call('GET', KEYS[1])" 1 mykey
+
+# Load and cache a script
+SCRIPT LOAD "return redis.call('INCR', KEYS[1])"
+# Returns: "sha1hash..."
+
+# Execute cached script
+EVALSHA sha1hash 1 counter
+
+# Check if scripts exist
+SCRIPT EXISTS sha1hash1 sha1hash2
+
+# Clear script cache
+SCRIPT FLUSH
+```
+
+Scripts have access to:
+- `KEYS` table - keys passed to the script
+- `ARGV` table - additional arguments
+- `redis.call(cmd, ...)` - execute Redis command (raises error on failure)
+- `redis.pcall(cmd, ...)` - execute Redis command (returns error as table)
+- `redis.sha1hex(str)` - compute SHA1 hash
+
+**Note**: Scripts execute atomically. Certain commands are blocked from scripts: `SUBSCRIBE`, `PUBLISH`, `MULTI`, `EXEC`, `WATCH`, nested `EVAL`/`EVALSHA`.
 
 ## Requirements
 
@@ -46,6 +104,8 @@ Environment variables:
 | `CACHE_TTL` | Cache TTL duration | `250ms` |
 | `CACHE_MAX_SIZE` | Maximum cached entries | `10000` |
 | `DEBUG` | Enable debug logging (set to `1` to enable) | `` |
+| `SQLTRACE` | SQL query tracing level (0-3, see Tracing section) | `0` |
+| `TRACE` | RESP command tracing level (0-3, see Tracing section) | `0` |
 
 ### In-Memory Cache
 
@@ -63,6 +123,55 @@ export CACHE_MAX_SIZE=10000
 - In **multi-pod deployments**, cached data may be stale for up to TTL duration
 - Writes (`SET`, `DEL`, etc.) invalidate the local cache immediately
 - Monitor cache effectiveness with `postkeys_cache_hits_total` and `postkeys_cache_misses_total` metrics
+
+### Tracing
+
+postkeys provides configurable tracing with three levels for both SQL and RESP commands:
+
+| Level | Description |
+|-------|-------------|
+| 0 | Off (default) |
+| 1 | Important only - administrative commands, DDL, errors |
+| 2 | Most operations - write operations, moderate frequency commands |
+| 3 | Everything - including high-frequency reads (GET, SET, etc.) |
+
+**SQL Tracing** (`SQLTRACE=1-3`) logs PostgreSQL queries based on level:
+- Level 1: DDL (TRUNCATE, DROP, ALTER), pg_notify, errors
+- Level 2: All writes (INSERT, UPDATE, DELETE, CREATE)
+- Level 3: Everything including SELECTs
+
+```
+[SQLTRACE] SELECT value FROM kv_strings WHERE key = $1 [$1="mykey"] -> rows (1.234ms)
+```
+
+**RESP Command Tracing** (`TRACE=1-3`) logs Redis commands based on level:
+- Level 1: AUTH, FLUSHDB, FLUSHALL, CONFIG, CLUSTER, DEBUG
+- Level 2: PUBLISH, SUBSCRIBE, DEL, EXPIRE, RENAME, etc.
+- Level 3: GET, SET, HGET, HSET, LPUSH, RPUSH, and all other commands
+
+```
+[TRACE] 10.0.0.1:54321 <- ["SET", "mykey", "myvalue"]
+[TRACE] 10.0.0.1:54321 -> +OK
+```
+
+Binary data is automatically detected and replaced with `<binary:SIZE>` to keep logs readable.
+Errors are always logged at any trace level > 0.
+
+> **Warning:** Higher trace levels generate significant log volume. Use level 3 only for debugging, not in production.
+
+### Graceful Shutdown
+
+postkeys handles shutdown signals gracefully:
+
+- **SIGINT** (Ctrl+C) and **SIGTERM**: Initiate graceful shutdown
+- **SIGHUP**: Also triggers graceful shutdown (can be used for restarts)
+- A second signal during shutdown forces immediate exit
+
+During graceful shutdown:
+1. Stop accepting new connections
+2. Wait for in-flight requests to complete (up to 30 seconds)
+3. Close database connections
+4. Exit cleanly
 
 ## Running
 
@@ -259,6 +368,8 @@ The following table lists the configurable parameters of the postkeys chart and 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `debug` | Enable debug logging (sets DEBUG=1) | `false` |
+| `sqlTraceLevel` | SQL query tracing level 0-3 (0=off, 1=important, 2=writes, 3=all) | `0` |
+| `traceLevel` | RESP command tracing level 0-3 (0=off, 1=important, 2=most, 3=all) | `0` |
 
 #### Metrics Configuration
 

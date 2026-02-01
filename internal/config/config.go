@@ -33,6 +33,14 @@ type Config struct {
 
 	// Debug mode
 	Debug bool
+
+	// SQLTraceLevel controls SQL query logging verbosity
+	// 0 = off, 1 = important only (DDL, errors), 2 = most commands, 3 = everything
+	SQLTraceLevel int
+
+	// TraceLevel controls RESP command logging verbosity
+	// 0 = off, 1 = important only (AUTH, FLUSHDB), 2 = most commands, 3 = everything (including GET/SET)
+	TraceLevel int
 }
 
 // Load loads configuration from environment variables
@@ -51,6 +59,8 @@ func Load() *Config {
 		CacheTTL:      getEnvDuration("CACHE_TTL", 250*time.Millisecond),
 		CacheMaxSize:  getEnvInt("CACHE_MAX_SIZE", 10000),
 		Debug:         getEnv("DEBUG", "") == "1",
+		SQLTraceLevel: getEnvInt("SQLTRACE", 0),
+		TraceLevel:    getEnvInt("TRACE", 0),
 	}
 }
 
