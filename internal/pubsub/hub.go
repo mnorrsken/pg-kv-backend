@@ -50,13 +50,6 @@ type Subscriber interface {
 	GetID() uint64
 }
 
-// listenCmd represents a LISTEN/UNLISTEN command to be executed by the listener goroutine
-type listenCmd struct {
-	channel  string
-	listen   bool // true for LISTEN, false for UNLISTEN
-	response chan error
-}
-
 // Hub manages pub/sub subscriptions and message routing
 type Hub struct {
 	pool     *pgxpool.Pool
@@ -71,7 +64,7 @@ type Hub struct {
 	patterns       map[string]map[uint64]Subscriber // pattern -> subscriberID -> subscriber
 	subPatterns    map[uint64]map[string]bool       // subscriberID -> patterns
 
-	// Listener connection (dedicated for LISTEN)
+	// Listener connection (dedicated for LISTEN/NOTIFY)
 	listenerConn   *pgx.Conn
 	listenerMu     sync.Mutex
 	listening      map[string]bool   // pg channels we're currently LISTENing to
@@ -82,6 +75,12 @@ type Hub struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	debug  bool
+}
+
+// listenCmd represents a LISTEN/UNLISTEN command to be executed by the listener goroutine
+type listenCmd struct {
+	channel  string
+	listen   bool // true for LISTEN, false for UNLISTEN
 }
 
 // NewHub creates a new pub/sub hub
@@ -96,7 +95,7 @@ func NewHub(pool *pgxpool.Pool, connStr string) *Hub {
 		subPatterns:   make(map[uint64]map[string]bool),
 		listening:     make(map[string]bool),
 		pgToRedis:     make(map[string]string),
-		listenCmds:    make(chan listenCmd, 100), // buffered channel for commands
+		listenCmds:    make(chan listenCmd, 100),
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -109,12 +108,12 @@ func (h *Hub) SetDebug(debug bool) {
 
 // Start initializes the hub and starts the notification listener
 func (h *Hub) Start(ctx context.Context) error {
-	// Create a dedicated connection for LISTEN
-	conn, err := pgx.Connect(ctx, h.connStr)
+	// Create a dedicated connection for LISTEN/NOTIFY
+	listenerConn, err := pgx.Connect(ctx, h.connStr)
 	if err != nil {
 		return fmt.Errorf("failed to create listener connection: %w", err)
 	}
-	h.listenerConn = conn
+	h.listenerConn = listenerConn
 
 	// Start the notification listener goroutine
 	h.wg.Add(1)
@@ -410,7 +409,7 @@ func (h *Hub) startListening(channel string) {
 	}
 	h.listenerMu.Unlock()
 
-	// Send command to listener goroutine (non-blocking with buffered channel)
+	// Queue LISTEN command to be processed by the listener goroutine
 	select {
 	case h.listenCmds <- listenCmd{channel: pgChan, listen: true}:
 		if h.debug {
@@ -434,7 +433,7 @@ func (h *Hub) stopListening(channel string) {
 	delete(h.pgToRedis, pgChan)
 	h.listenerMu.Unlock()
 
-	// Send command to listener goroutine
+	// Queue UNLISTEN command
 	select {
 	case h.listenCmds <- listenCmd{channel: pgChan, listen: false}:
 		if h.debug {
@@ -446,18 +445,14 @@ func (h *Hub) stopListening(channel string) {
 }
 
 // processListenCmds processes any pending LISTEN/UNLISTEN commands
-// Returns true if any commands were processed
-func (h *Hub) processListenCmds() bool {
-	processed := false
+func (h *Hub) processListenCmds() {
 	for {
 		select {
 		case cmd := <-h.listenCmds:
-			processed = true
 			if cmd.listen {
 				_, err := h.listenerConn.Exec(h.ctx, fmt.Sprintf("LISTEN %s", pgxIdentifier(cmd.channel)))
 				if err != nil {
 					log.Printf("Failed to LISTEN on channel %s: %v", cmd.channel, err)
-					// Mark as not listening since the LISTEN failed
 					h.listenerMu.Lock()
 					delete(h.listening, cmd.channel)
 					h.listenerMu.Unlock()
@@ -472,11 +467,8 @@ func (h *Hub) processListenCmds() bool {
 					log.Printf("[DEBUG] Stopped LISTEN on channel: %s", cmd.channel)
 				}
 			}
-			if cmd.response != nil {
-				cmd.response <- nil
-			}
 		default:
-			return processed
+			return
 		}
 	}
 }
@@ -485,10 +477,9 @@ func (h *Hub) processListenCmds() bool {
 func (h *Hub) listenLoop() {
 	defer h.wg.Done()
 
-	// Adaptive timeout: use a short timeout when commands are pending,
-	// longer when idle to reduce CPU usage
-	const shortTimeout = 100 * time.Millisecond
-	const longTimeout = 5 * time.Second
+	// Short timeout to ensure LISTEN/UNLISTEN commands are processed promptly
+	// This is a trade-off between CPU usage and responsiveness
+	const notifyTimeout = 100 * time.Millisecond
 
 	for {
 		select {
@@ -498,17 +489,10 @@ func (h *Hub) listenLoop() {
 		}
 
 		// Process any pending LISTEN/UNLISTEN commands first
-		hadCommands := h.processListenCmds()
-
-		// Use shorter timeout if we just processed commands (more might be coming)
-		// or if there are pending commands in the channel
-		timeout := longTimeout
-		if hadCommands || len(h.listenCmds) > 0 {
-			timeout = shortTimeout
-		}
+		h.processListenCmds()
 
 		// Wait for notification
-		ctx, cancel := context.WithTimeout(h.ctx, timeout)
+		ctx, cancel := context.WithTimeout(h.ctx, notifyTimeout)
 		notification, err := h.listenerConn.WaitForNotification(ctx)
 		cancel()
 

@@ -9,10 +9,7 @@ All notable changes to this project will be documented in this file.
   - CPU profile: `/debug/pprof/profile?seconds=30`
   - Heap profile: `/debug/pprof/heap`
   - Goroutine dump: `/debug/pprof/goroutine`
-
-### Fixed
-- High CPU usage caused by 100ms polling loop in pub/sub listener
-  - Changed to adaptive timeout (5s idle, 100ms when commands pending)
+  - Mutex/block profiling available
 
 ## [0.10] - 2026-02-01
 
