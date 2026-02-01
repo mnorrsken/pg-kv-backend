@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10] - 2026-02-01
+
+### Added
+- More complete RESP3 support, including Lua and queue support.
+- Configurable trace levels (0-3) for SQL and RESP command logging
+- Graceful shutdown with 30-second timeout and ordered component shutdown
+- Force-exit on second signal during shutdown
+
+### Fixed
+- Transaction rollback errors from ignored QueryRow errors in list/hash operations
+- pg_notify "channel name too long" errors for keys exceeding 63 bytes
+
+### Changed
+- SQLTRACE and TRACE now accept levels 0-3 instead of boolean values
+
 ## [0.9] - 2026-01-31
 
 ### Added
