@@ -64,6 +64,38 @@ func (t *TxStore) Append(ctx context.Context, key, value string) (int64, error) 
 	return t.ops.appendStr(ctx, t.tx, key, value)
 }
 
+func (t *TxStore) GetRange(ctx context.Context, key string, start, end int64) (string, error) {
+	return t.ops.getRange(ctx, t.tx, key, start, end)
+}
+
+func (t *TxStore) SetRange(ctx context.Context, key string, offset int64, value string) (int64, error) {
+	return t.ops.setRange(ctx, t.tx, key, offset, value)
+}
+
+func (t *TxStore) BitField(ctx context.Context, key string, ops []BitFieldOp) ([]int64, error) {
+	return t.ops.bitField(ctx, t.tx, key, ops)
+}
+
+func (t *TxStore) StrLen(ctx context.Context, key string) (int64, error) {
+	return t.ops.strLen(ctx, t.tx, key)
+}
+
+func (t *TxStore) GetEx(ctx context.Context, key string, ttl time.Duration, persist bool) (string, bool, error) {
+	return t.ops.getEx(ctx, t.tx, key, ttl, persist)
+}
+
+func (t *TxStore) GetDel(ctx context.Context, key string) (string, bool, error) {
+	return t.ops.getDel(ctx, t.tx, key)
+}
+
+func (t *TxStore) GetSet(ctx context.Context, key, value string) (string, bool, error) {
+	return t.ops.getSet(ctx, t.tx, key, value)
+}
+
+func (t *TxStore) IncrByFloat(ctx context.Context, key string, delta float64) (float64, error) {
+	return t.ops.incrByFloat(ctx, t.tx, key, delta)
+}
+
 // ============== Key Commands ==============
 
 func (t *TxStore) Del(ctx context.Context, keys []string) (int64, error) {
@@ -138,6 +170,10 @@ func (t *TxStore) HVals(ctx context.Context, key string) ([]string, error) {
 
 func (t *TxStore) HLen(ctx context.Context, key string) (int64, error) {
 	return t.ops.hLen(ctx, t.tx, key)
+}
+
+func (t *TxStore) HIncrBy(ctx context.Context, key, field string, increment int64) (int64, error) {
+	return t.ops.hIncrBy(ctx, t.tx, key, field, increment)
 }
 
 // ============== List Commands ==============

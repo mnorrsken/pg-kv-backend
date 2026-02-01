@@ -71,6 +71,38 @@ func (t *MockTransaction) Append(ctx context.Context, key, value string) (int64,
 	return t.parent.Append(ctx, key, value)
 }
 
+func (t *MockTransaction) GetRange(ctx context.Context, key string, start, end int64) (string, error) {
+	return t.parent.GetRange(ctx, key, start, end)
+}
+
+func (t *MockTransaction) SetRange(ctx context.Context, key string, offset int64, value string) (int64, error) {
+	return t.parent.SetRange(ctx, key, offset, value)
+}
+
+func (t *MockTransaction) BitField(ctx context.Context, key string, ops []BitFieldOp) ([]int64, error) {
+	return t.parent.BitField(ctx, key, ops)
+}
+
+func (t *MockTransaction) StrLen(ctx context.Context, key string) (int64, error) {
+	return t.parent.StrLen(ctx, key)
+}
+
+func (t *MockTransaction) GetEx(ctx context.Context, key string, ttl time.Duration, persist bool) (string, bool, error) {
+	return t.parent.GetEx(ctx, key, ttl, persist)
+}
+
+func (t *MockTransaction) GetDel(ctx context.Context, key string) (string, bool, error) {
+	return t.parent.GetDel(ctx, key)
+}
+
+func (t *MockTransaction) GetSet(ctx context.Context, key, value string) (string, bool, error) {
+	return t.parent.GetSet(ctx, key, value)
+}
+
+func (t *MockTransaction) IncrByFloat(ctx context.Context, key string, delta float64) (float64, error) {
+	return t.parent.IncrByFloat(ctx, key, delta)
+}
+
 func (t *MockTransaction) Del(ctx context.Context, keys []string) (int64, error) {
 	return t.parent.Del(ctx, keys)
 }
@@ -141,6 +173,10 @@ func (t *MockTransaction) HVals(ctx context.Context, key string) ([]string, erro
 
 func (t *MockTransaction) HLen(ctx context.Context, key string) (int64, error) {
 	return t.parent.HLen(ctx, key)
+}
+
+func (t *MockTransaction) HIncrBy(ctx context.Context, key, field string, increment int64) (int64, error) {
+	return t.parent.HIncrBy(ctx, key, field, increment)
 }
 
 func (t *MockTransaction) LPush(ctx context.Context, key string, values []string) (int64, error) {

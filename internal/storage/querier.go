@@ -3,10 +3,12 @@ package storage
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -17,6 +19,29 @@ type Querier interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// binaryFieldPrefix is used to identify base64-encoded binary field names
+const binaryFieldPrefix = "\x1Fb64:"
+
+// encodeField encodes a field name for PostgreSQL storage.
+// Field names with null bytes or invalid UTF-8 are base64-encoded.
+func encodeField(field string) string {
+	if strings.ContainsRune(field, 0) || !utf8.ValidString(field) {
+		return binaryFieldPrefix + base64.StdEncoding.EncodeToString([]byte(field))
+	}
+	return field
+}
+
+// decodeField decodes a field name from PostgreSQL storage.
+func decodeField(field string) string {
+	if strings.HasPrefix(field, binaryFieldPrefix) {
+		encoded := field[len(binaryFieldPrefix):]
+		if decoded, err := base64.StdEncoding.DecodeString(encoded); err == nil {
+			return string(decoded)
+		}
+	}
+	return field
 }
 
 // queryOps provides the actual implementation of storage operations using a Querier.
@@ -244,6 +269,378 @@ func (o queryOps) appendStr(ctx context.Context, q Querier, key, value string) (
 	return int64(len(newValue)), nil
 }
 
+func (o queryOps) getRange(ctx context.Context, q Querier, key string, start, end int64) (string, error) {
+	var value []byte
+	err := q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&value)
+	if err == pgx.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+
+	length := int64(len(value))
+	if length == 0 {
+		return "", nil
+	}
+
+	// Handle negative indices
+	if start < 0 {
+		start = length + start
+	}
+	if end < 0 {
+		end = length + end
+	}
+
+	// Clamp to valid range
+	if start < 0 {
+		start = 0
+	}
+	if end >= length {
+		end = length - 1
+	}
+	if start > end || start >= length {
+		return "", nil
+	}
+
+	return string(value[start : end+1]), nil
+}
+
+func (o queryOps) setRange(ctx context.Context, q Querier, key string, offset int64, value string) (int64, error) {
+	// Get existing value or create empty
+	var existing []byte
+	err := q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&existing)
+	if err == pgx.ErrNoRows {
+		existing = []byte{}
+	} else if err != nil {
+		return 0, err
+	}
+
+	// Extend buffer if needed
+	endPos := offset + int64(len(value))
+	if int64(len(existing)) < endPos {
+		newBuf := make([]byte, endPos)
+		copy(newBuf, existing)
+		existing = newBuf
+	}
+
+	// Copy value at offset
+	copy(existing[offset:], value)
+
+	// Save back
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_strings (key, value) VALUES ($1, $2)
+		 ON CONFLICT (key) DO UPDATE SET value = $2`,
+		key, existing,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := o.setMeta(ctx, q, key, TypeString, nil); err != nil {
+		return 0, err
+	}
+
+	return int64(len(existing)), nil
+}
+
+func (o queryOps) bitField(ctx context.Context, q Querier, key string, ops []BitFieldOp) ([]int64, error) {
+	// Get existing value or create empty
+	var value []byte
+	err := q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&value)
+	if err == pgx.ErrNoRows {
+		value = []byte{}
+	} else if err != nil {
+		return nil, err
+	}
+
+	results := make([]int64, 0, len(ops))
+	modified := false
+
+	for _, op := range ops {
+		// Parse encoding (e.g., "u8", "i16", "u32")
+		signed := false
+		if len(op.Encoding) > 0 && op.Encoding[0] == 'i' {
+			signed = true
+		}
+		bitWidth := int64(0)
+		if len(op.Encoding) > 1 {
+			bitWidth, _ = strconv.ParseInt(op.Encoding[1:], 10, 64)
+		}
+		if bitWidth <= 0 || bitWidth > 64 {
+			bitWidth = 8 // default to 8 bits
+		}
+
+		// Calculate byte positions
+		bitOffset := op.Offset
+		byteOffset := bitOffset / 8
+		bitInByte := bitOffset % 8
+
+		// Ensure buffer is large enough
+		neededBytes := byteOffset + (bitWidth+bitInByte+7)/8
+		if int64(len(value)) < neededBytes {
+			newValue := make([]byte, neededBytes)
+			copy(newValue, value)
+			value = newValue
+		}
+
+		switch op.OpType {
+		case "GET":
+			result := getBitField(value, bitOffset, bitWidth, signed)
+			results = append(results, result)
+
+		case "SET":
+			oldValue := getBitField(value, bitOffset, bitWidth, signed)
+			results = append(results, oldValue)
+			setBitField(value, bitOffset, bitWidth, op.Value)
+			modified = true
+
+		case "INCRBY":
+			oldValue := getBitField(value, bitOffset, bitWidth, signed)
+			newValue := oldValue + op.Value
+			// Handle overflow based on encoding
+			if signed {
+				// Signed overflow wraps around
+				max := int64(1) << (bitWidth - 1)
+				min := -max
+				for newValue >= max {
+					newValue -= max * 2
+				}
+				for newValue < min {
+					newValue += max * 2
+				}
+			} else {
+				// Unsigned overflow wraps around
+				mask := int64((1 << bitWidth) - 1)
+				newValue = newValue & mask
+			}
+			setBitField(value, bitOffset, bitWidth, newValue)
+			results = append(results, newValue)
+			modified = true
+
+		case "OVERFLOW":
+			// OVERFLOW just sets mode for subsequent ops, we ignore it for now (default WRAP)
+			continue
+		}
+	}
+
+	if modified {
+		_, err = q.Exec(ctx,
+			`INSERT INTO kv_strings (key, value) VALUES ($1, $2)
+			 ON CONFLICT (key) DO UPDATE SET value = $2`,
+			key, value,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := o.setMeta(ctx, q, key, TypeString, nil); err != nil {
+			return nil, err
+		}
+	}
+
+	return results, nil
+}
+
+// getBitField extracts a bit field value from a byte slice
+func getBitField(data []byte, bitOffset, bitWidth int64, signed bool) int64 {
+	var result int64
+	for i := int64(0); i < bitWidth; i++ {
+		byteIdx := (bitOffset + i) / 8
+		bitIdx := 7 - ((bitOffset + i) % 8) // MSB first
+		if byteIdx < int64(len(data)) {
+			if data[byteIdx]&(1<<bitIdx) != 0 {
+				result |= 1 << (bitWidth - 1 - i)
+			}
+		}
+	}
+	// Sign extend if signed
+	if signed && bitWidth > 0 && (result&(1<<(bitWidth-1))) != 0 {
+		// Set all bits above bitWidth to 1
+		result |= ^((1 << bitWidth) - 1)
+	}
+	return result
+}
+
+// setBitField sets a bit field value in a byte slice
+func setBitField(data []byte, bitOffset, bitWidth, value int64) {
+	for i := int64(0); i < bitWidth; i++ {
+		byteIdx := (bitOffset + i) / 8
+		bitIdx := 7 - ((bitOffset + i) % 8) // MSB first
+		if byteIdx < int64(len(data)) {
+			bitValue := (value >> (bitWidth - 1 - i)) & 1
+			if bitValue != 0 {
+				data[byteIdx] |= 1 << bitIdx
+			} else {
+				data[byteIdx] &^= 1 << bitIdx
+			}
+		}
+	}
+}
+
+func (o queryOps) strLen(ctx context.Context, q Querier, key string) (int64, error) {
+	var value []byte
+	err := q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&value)
+	if err == pgx.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(value)), nil
+}
+
+func (o queryOps) getEx(ctx context.Context, q Querier, key string, ttl time.Duration, persist bool) (string, bool, error) {
+	var value []byte
+	var expiresAt *time.Time
+
+	err := q.QueryRow(ctx,
+		"SELECT value, expires_at FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&value, &expiresAt)
+	if err == pgx.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	// Update expiration based on options
+	if persist {
+		// Remove expiration
+		_, err = q.Exec(ctx,
+			"UPDATE kv_strings SET expires_at = NULL WHERE key = $1",
+			key,
+		)
+	} else if ttl > 0 {
+		// Set new expiration
+		newExpiry := time.Now().Add(ttl)
+		_, err = q.Exec(ctx,
+			"UPDATE kv_strings SET expires_at = $2 WHERE key = $1",
+			key, newExpiry,
+		)
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	return string(value), true, nil
+}
+
+func (o queryOps) getDel(ctx context.Context, q Querier, key string) (string, bool, error) {
+	var value []byte
+	err := q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&value)
+	if err == pgx.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	// Delete the key
+	_, err = q.Exec(ctx, "DELETE FROM kv_strings WHERE key = $1", key)
+	if err != nil {
+		return "", false, err
+	}
+	_, _ = q.Exec(ctx, "DELETE FROM kv_meta WHERE key = $1", key)
+
+	return string(value), true, nil
+}
+
+func (o queryOps) getSet(ctx context.Context, q Querier, key, value string) (string, bool, error) {
+	// Get old value
+	var oldValue []byte
+	err := q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&oldValue)
+	exists := err == nil
+	if err != nil && err != pgx.ErrNoRows {
+		return "", false, err
+	}
+
+	// Set new value (upsert)
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_strings (key, value, expires_at) VALUES ($1, $2, NULL)
+		 ON CONFLICT (key) DO UPDATE SET value = $2, expires_at = NULL`,
+		key, []byte(value),
+	)
+	if err != nil {
+		return "", false, err
+	}
+
+	if err := o.setMeta(ctx, q, key, TypeString, nil); err != nil {
+		return "", false, err
+	}
+
+	if exists {
+		return string(oldValue), true, nil
+	}
+	return "", false, nil
+}
+
+func (o queryOps) incrByFloat(ctx context.Context, q Querier, key string, delta float64) (float64, error) {
+	// Check key type
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return 0, err
+	}
+	if keyType != TypeNone && keyType != TypeString {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	var currentValue float64 = 0
+	var valueBytes []byte
+
+	err = q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&valueBytes)
+	if err == nil {
+		currentValue, err = strconv.ParseFloat(string(valueBytes), 64)
+		if err != nil {
+			return 0, fmt.Errorf("ERR value is not a valid float")
+		}
+	} else if err != pgx.ErrNoRows {
+		return 0, err
+	}
+
+	newValue := currentValue + delta
+
+	// Format without trailing zeros, but preserve precision
+	valueStr := strconv.FormatFloat(newValue, 'f', -1, 64)
+
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_strings (key, value) VALUES ($1, $2)
+		 ON CONFLICT (key) DO UPDATE SET value = $2`,
+		key, []byte(valueStr),
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := o.setMeta(ctx, q, key, TypeString, nil); err != nil {
+		return 0, err
+	}
+
+	return newValue, nil
+}
+
 // ============== Key Commands ==============
 
 func (o queryOps) del(ctx context.Context, q Querier, keys []string) (int64, error) {
@@ -459,7 +856,7 @@ func (o queryOps) hGet(ctx context.Context, q Querier, key, field string) (strin
 	var value []byte
 	err := q.QueryRow(ctx,
 		"SELECT value FROM kv_hashes WHERE key = $1 AND field = $2 AND (expires_at IS NULL OR expires_at > NOW())",
-		key, field,
+		key, encodeField(field),
 	).Scan(&value)
 
 	if err == pgx.ErrNoRows {
@@ -483,10 +880,11 @@ func (o queryOps) hSet(ctx context.Context, q Querier, key string, fields map[st
 
 	var added int64
 	for field, value := range fields {
+		encField := encodeField(field)
 		result, err := q.Exec(ctx,
 			`INSERT INTO kv_hashes (key, field, value) VALUES ($1, $2, $3)
 			 ON CONFLICT (key, field) DO UPDATE SET value = $3`,
-			key, field, []byte(value),
+			key, encField, []byte(value),
 		)
 		if err != nil {
 			return 0, err
@@ -495,7 +893,7 @@ func (o queryOps) hSet(ctx context.Context, q Querier, key string, fields map[st
 		if result.RowsAffected() > 0 {
 			// Check if this was a new field
 			var count int64
-			q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_hashes WHERE key = $1 AND field = $2", key, field).Scan(&count)
+			q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_hashes WHERE key = $1 AND field = $2", key, encField).Scan(&count)
 			if count == 1 {
 				added++
 			}
@@ -511,9 +909,14 @@ func (o queryOps) hSet(ctx context.Context, q Querier, key string, fields map[st
 }
 
 func (o queryOps) hDel(ctx context.Context, q Querier, key string, fields []string) (int64, error) {
+	// Encode field names for PostgreSQL
+	encFields := make([]string, len(fields))
+	for i, f := range fields {
+		encFields[i] = encodeField(f)
+	}
 	result, err := q.Exec(ctx,
 		"DELETE FROM kv_hashes WHERE key = $1 AND field = ANY($2)",
-		key, fields,
+		key, encFields,
 	)
 	if err != nil {
 		return 0, err
@@ -538,7 +941,7 @@ func (o queryOps) hGetAll(ctx context.Context, q Querier, key string) (map[strin
 		if err := rows.Scan(&field, &value); err != nil {
 			return nil, err
 		}
-		result[field] = string(value)
+		result[decodeField(field)] = string(value)
 	}
 	return result, nil
 }
@@ -546,10 +949,16 @@ func (o queryOps) hGetAll(ctx context.Context, q Querier, key string) (map[strin
 func (o queryOps) hMGet(ctx context.Context, q Querier, key string, fields []string) ([]interface{}, error) {
 	results := make([]interface{}, len(fields))
 
+	// Encode field names for query
+	encFields := make([]string, len(fields))
+	for i, f := range fields {
+		encFields[i] = encodeField(f)
+	}
+
 	rows, err := q.Query(ctx,
 		`SELECT field, value FROM kv_hashes 
 		 WHERE key = $1 AND field = ANY($2) AND (expires_at IS NULL OR expires_at > NOW())`,
-		key, fields,
+		key, encFields,
 	)
 	if err != nil {
 		return nil, err
@@ -567,7 +976,8 @@ func (o queryOps) hMGet(ctx context.Context, q Querier, key string, fields []str
 	}
 
 	for i, field := range fields {
-		if val, ok := fieldValues[field]; ok {
+		encField := encodeField(field)
+		if val, ok := fieldValues[encField]; ok {
 			results[i] = val
 		} else {
 			results[i] = nil
@@ -581,7 +991,7 @@ func (o queryOps) hExists(ctx context.Context, q Querier, key, field string) (bo
 	err := q.QueryRow(ctx,
 		`SELECT COUNT(*) FROM kv_hashes 
 		 WHERE key = $1 AND field = $2 AND (expires_at IS NULL OR expires_at > NOW())`,
-		key, field,
+		key, encodeField(field),
 	).Scan(&count)
 	return count > 0, err
 }
@@ -602,7 +1012,7 @@ func (o queryOps) hKeys(ctx context.Context, q Querier, key string) ([]string, e
 		if err := rows.Scan(&field); err != nil {
 			return nil, err
 		}
-		keys = append(keys, field)
+		keys = append(keys, decodeField(field))
 	}
 	return keys, nil
 }
@@ -637,6 +1047,57 @@ func (o queryOps) hLen(ctx context.Context, q Querier, key string) (int64, error
 	return count, err
 }
 
+func (o queryOps) hIncrBy(ctx context.Context, q Querier, key, field string, increment int64) (int64, error) {
+	// Check if key exists but is wrong type
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return 0, err
+	}
+	if keyType != TypeNone && keyType != TypeHash {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	// Encode field name for PostgreSQL
+	encField := encodeField(field)
+
+	// Get current value or default to 0
+	var currentValue int64 = 0
+	var valueBytes []byte
+	err = q.QueryRow(ctx,
+		"SELECT value FROM kv_hashes WHERE key = $1 AND field = $2 AND (expires_at IS NULL OR expires_at > NOW())",
+		key, encField,
+	).Scan(&valueBytes)
+	if err == nil {
+		// Parse existing value as integer
+		currentValue, err = strconv.ParseInt(string(valueBytes), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("ERR hash value is not an integer")
+		}
+	} else if err != pgx.ErrNoRows {
+		return 0, err
+	}
+
+	// Calculate new value
+	newValue := currentValue + increment
+
+	// Upsert the new value
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_hashes (key, field, value) VALUES ($1, $2, $3)
+		 ON CONFLICT (key, field) DO UPDATE SET value = $3`,
+		key, encField, []byte(strconv.FormatInt(newValue, 10)),
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	// Set metadata
+	if err := o.setMeta(ctx, q, key, TypeHash, nil); err != nil {
+		return 0, err
+	}
+
+	return newValue, nil
+}
+
 // ============== List Commands ==============
 
 func (o queryOps) lPush(ctx context.Context, q Querier, key string, values []string) (int64, error) {
@@ -648,12 +1109,22 @@ func (o queryOps) lPush(ctx context.Context, q Querier, key string, values []str
 		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
-	// Insert values at the beginning using atomic subquery to avoid race conditions
-	for _, value := range values {
+	// Use advisory lock to serialize list operations on this key
+	// hashtext returns int4, we need int8 for pg_advisory_xact_lock
+	_, err = q.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", key)
+	if err != nil {
+		return 0, err
+	}
+
+	// Get current min index
+	var minIdx int64 = 0
+	_ = q.QueryRow(ctx, "SELECT COALESCE(MIN(idx), 0) FROM kv_lists WHERE key = $1", key).Scan(&minIdx)
+
+	// Insert values at the beginning (in reverse order so first value ends up at head)
+	for i, value := range values {
 		_, err := q.Exec(ctx,
-			`INSERT INTO kv_lists (key, idx, value) 
-			 VALUES ($1, COALESCE((SELECT MIN(idx) FROM kv_lists WHERE key = $1), 0) - 1, $2)`,
-			key, []byte(value),
+			"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
+			key, minIdx-int64(i+1), []byte(value),
 		)
 		if err != nil {
 			return 0, err
@@ -679,12 +1150,21 @@ func (o queryOps) rPush(ctx context.Context, q Querier, key string, values []str
 		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
-	// Insert values at the end using atomic subquery to avoid race conditions
-	for _, value := range values {
+	// Use advisory lock to serialize list operations on this key
+	_, err = q.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", key)
+	if err != nil {
+		return 0, err
+	}
+
+	// Get current max index
+	var maxIdx int64 = -1
+	_ = q.QueryRow(ctx, "SELECT COALESCE(MAX(idx), -1) FROM kv_lists WHERE key = $1", key).Scan(&maxIdx)
+
+	// Insert values at the end
+	for i, value := range values {
 		_, err := q.Exec(ctx,
-			`INSERT INTO kv_lists (key, idx, value) 
-			 VALUES ($1, COALESCE((SELECT MAX(idx) FROM kv_lists WHERE key = $1), -1) + 1, $2)`,
-			key, []byte(value),
+			"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
+			key, maxIdx+int64(i+1), []byte(value),
 		)
 		if err != nil {
 			return 0, err

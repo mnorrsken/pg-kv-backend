@@ -108,6 +108,44 @@ func (s *CachedStore) Append(ctx context.Context, key, value string) (int64, err
 	return result, nil
 }
 
+func (s *CachedStore) GetRange(ctx context.Context, key string, start, end int64) (string, error) {
+	return s.backend.GetRange(ctx, key, start, end)
+}
+
+func (s *CachedStore) SetRange(ctx context.Context, key string, offset int64, value string) (int64, error) {
+	s.cache.Invalidate(key)
+	return s.backend.SetRange(ctx, key, offset, value)
+}
+
+func (s *CachedStore) BitField(ctx context.Context, key string, ops []storage.BitFieldOp) ([]int64, error) {
+	s.cache.Invalidate(key)
+	return s.backend.BitField(ctx, key, ops)
+}
+
+func (s *CachedStore) StrLen(ctx context.Context, key string) (int64, error) {
+	return s.backend.StrLen(ctx, key)
+}
+
+func (s *CachedStore) GetEx(ctx context.Context, key string, ttl time.Duration, persist bool) (string, bool, error) {
+	s.cache.Invalidate(key) // TTL change
+	return s.backend.GetEx(ctx, key, ttl, persist)
+}
+
+func (s *CachedStore) GetDel(ctx context.Context, key string) (string, bool, error) {
+	s.cache.Invalidate(key)
+	return s.backend.GetDel(ctx, key)
+}
+
+func (s *CachedStore) GetSet(ctx context.Context, key, value string) (string, bool, error) {
+	s.cache.Invalidate(key)
+	return s.backend.GetSet(ctx, key, value)
+}
+
+func (s *CachedStore) IncrByFloat(ctx context.Context, key string, delta float64) (float64, error) {
+	s.cache.Invalidate(key)
+	return s.backend.IncrByFloat(ctx, key, delta)
+}
+
 // ============== Key Commands ==============
 
 func (s *CachedStore) Del(ctx context.Context, keys []string) (int64, error) {
@@ -204,6 +242,11 @@ func (s *CachedStore) HVals(ctx context.Context, key string) ([]string, error) {
 
 func (s *CachedStore) HLen(ctx context.Context, key string) (int64, error) {
 	return s.backend.HLen(ctx, key)
+}
+
+func (s *CachedStore) HIncrBy(ctx context.Context, key, field string, increment int64) (int64, error) {
+	s.cache.Delete(key)
+	return s.backend.HIncrBy(ctx, key, field, increment)
 }
 
 // ============== List Commands (pass-through, no caching) ==============

@@ -23,6 +23,14 @@ type ZMember struct {
 	Score  float64
 }
 
+// BitFieldOp represents a BITFIELD operation (GET, SET, INCRBY)
+type BitFieldOp struct {
+	OpType   string // "GET", "SET", "INCRBY"
+	Encoding string // e.g., "u8", "i16", "u32"
+	Offset   int64  // bit offset (can use # prefix for type-width multiplier)
+	Value    int64  // for SET and INCRBY
+}
+
 // Operations defines the common storage operations available in both regular and transaction contexts
 type Operations interface {
 	// String commands
@@ -32,7 +40,15 @@ type Operations interface {
 	MGet(ctx context.Context, keys []string) ([]interface{}, error)
 	MSet(ctx context.Context, pairs map[string]string) error
 	Incr(ctx context.Context, key string, delta int64) (int64, error)
+	IncrByFloat(ctx context.Context, key string, delta float64) (float64, error)
 	Append(ctx context.Context, key, value string) (int64, error)
+	GetRange(ctx context.Context, key string, start, end int64) (string, error)
+	SetRange(ctx context.Context, key string, offset int64, value string) (int64, error)
+	StrLen(ctx context.Context, key string) (int64, error)
+	GetEx(ctx context.Context, key string, ttl time.Duration, persist bool) (string, bool, error)
+	GetDel(ctx context.Context, key string) (string, bool, error)
+	GetSet(ctx context.Context, key, value string) (string, bool, error)
+	BitField(ctx context.Context, key string, ops []BitFieldOp) ([]int64, error)
 
 	// Key commands
 	Del(ctx context.Context, keys []string) (int64, error)
@@ -55,6 +71,7 @@ type Operations interface {
 	HKeys(ctx context.Context, key string) ([]string, error)
 	HVals(ctx context.Context, key string) ([]string, error)
 	HLen(ctx context.Context, key string) (int64, error)
+	HIncrBy(ctx context.Context, key, field string, increment int64) (int64, error)
 
 	// List commands
 	LPush(ctx context.Context, key string, values []string) (int64, error)

@@ -237,6 +237,77 @@ func (s *Store) Append(ctx context.Context, key, value string) (int64, error) {
 	return result, err
 }
 
+func (s *Store) GetRange(ctx context.Context, key string, start, end int64) (string, error) {
+	return s.ops.getRange(ctx, s.pool, key, start, end)
+}
+
+func (s *Store) SetRange(ctx context.Context, key string, offset int64, value string) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.setRange(ctx, tx, key, offset, value)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) BitField(ctx context.Context, key string, ops []BitFieldOp) ([]int64, error) {
+	var result []int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.bitField(ctx, tx, key, ops)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) StrLen(ctx context.Context, key string) (int64, error) {
+	return s.ops.strLen(ctx, s.pool, key)
+}
+
+func (s *Store) GetEx(ctx context.Context, key string, ttl time.Duration, persist bool) (string, bool, error) {
+	var result string
+	var exists bool
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, exists, err = s.ops.getEx(ctx, tx, key, ttl, persist)
+		return err
+	})
+	return result, exists, err
+}
+
+func (s *Store) GetDel(ctx context.Context, key string) (string, bool, error) {
+	var result string
+	var exists bool
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, exists, err = s.ops.getDel(ctx, tx, key)
+		return err
+	})
+	return result, exists, err
+}
+
+func (s *Store) GetSet(ctx context.Context, key, value string) (string, bool, error) {
+	var result string
+	var exists bool
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, exists, err = s.ops.getSet(ctx, tx, key, value)
+		return err
+	})
+	return result, exists, err
+}
+
+func (s *Store) IncrByFloat(ctx context.Context, key string, delta float64) (float64, error) {
+	var result float64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.incrByFloat(ctx, tx, key, delta)
+		return err
+	})
+	return result, err
+}
+
 // ============== Key Commands ==============
 
 func (s *Store) Del(ctx context.Context, keys []string) (int64, error) {
@@ -325,6 +396,16 @@ func (s *Store) HVals(ctx context.Context, key string) ([]string, error) {
 
 func (s *Store) HLen(ctx context.Context, key string) (int64, error) {
 	return s.ops.hLen(ctx, s.pool, key)
+}
+
+func (s *Store) HIncrBy(ctx context.Context, key, field string, increment int64) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.hIncrBy(ctx, tx, key, field, increment)
+		return err
+	})
+	return result, err
 }
 
 // ============== List Commands ==============

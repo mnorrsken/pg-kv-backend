@@ -312,6 +312,314 @@ func (h *Handler) appendCmdOp(ctx context.Context, ops storage.Operations, args 
 	return resp.Int(length)
 }
 
+func (h *Handler) getrangeOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("getrange")
+	}
+
+	key := args[0].Bulk
+	start, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+	end, err := strconv.ParseInt(args[2].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+
+	result, err := ops.GetRange(ctx, key, start, end)
+	if err != nil {
+		return resp.Err(err.Error())
+	}
+	return resp.Bulk(result)
+}
+
+func (h *Handler) setrangeOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("setrange")
+	}
+
+	key := args[0].Bulk
+	offset, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+	if offset < 0 {
+		return resp.Err("ERR offset is out of range")
+	}
+	value := args[2].Bulk
+
+	length, err := ops.SetRange(ctx, key, offset, value)
+	if err != nil {
+		return resp.Err(err.Error())
+	}
+	return resp.Int(length)
+}
+
+func (h *Handler) bitfieldOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("bitfield")
+	}
+
+	key := args[0].Bulk
+	var bitfieldOps []storage.BitFieldOp
+
+	i := 1
+	for i < len(args) {
+		opType := strings.ToUpper(args[i].Bulk)
+		i++
+
+		switch opType {
+		case "GET":
+			if i+2 > len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			encoding := args[i].Bulk
+			offset, err := parseBitfieldOffset(args[i+1].Bulk, encoding)
+			if err != nil {
+				return resp.Err(err.Error())
+			}
+			bitfieldOps = append(bitfieldOps, storage.BitFieldOp{
+				OpType:   "GET",
+				Encoding: encoding,
+				Offset:   offset,
+			})
+			i += 2
+
+		case "SET":
+			if i+3 > len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			encoding := args[i].Bulk
+			offset, err := parseBitfieldOffset(args[i+1].Bulk, encoding)
+			if err != nil {
+				return resp.Err(err.Error())
+			}
+			value, err := strconv.ParseInt(args[i+2].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+			bitfieldOps = append(bitfieldOps, storage.BitFieldOp{
+				OpType:   "SET",
+				Encoding: encoding,
+				Offset:   offset,
+				Value:    value,
+			})
+			i += 3
+
+		case "INCRBY":
+			if i+3 > len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			encoding := args[i].Bulk
+			offset, err := parseBitfieldOffset(args[i+1].Bulk, encoding)
+			if err != nil {
+				return resp.Err(err.Error())
+			}
+			increment, err := strconv.ParseInt(args[i+2].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+			bitfieldOps = append(bitfieldOps, storage.BitFieldOp{
+				OpType:   "INCRBY",
+				Encoding: encoding,
+				Offset:   offset,
+				Value:    increment,
+			})
+			i += 3
+
+		case "OVERFLOW":
+			// Skip overflow mode for now (default WRAP)
+			if i < len(args) {
+				i++ // skip the mode (WRAP, SAT, FAIL)
+			}
+
+		default:
+			return resp.Err("ERR syntax error")
+		}
+	}
+
+	results, err := ops.BitField(ctx, key, bitfieldOps)
+	if err != nil {
+		return resp.Err(err.Error())
+	}
+
+	// Return array of results
+	values := make([]resp.Value, len(results))
+	for i, r := range results {
+		values[i] = resp.Int(r)
+	}
+	return resp.Value{Type: resp.Array, Array: values}
+}
+
+// parseBitfieldOffset parses a bitfield offset, handling # prefix for type-width multiplier
+func parseBitfieldOffset(offsetStr, encoding string) (int64, error) {
+	if len(offsetStr) > 0 && offsetStr[0] == '#' {
+		// Type-width multiplier: #N means N * bitWidth
+		multiplier, err := strconv.ParseInt(offsetStr[1:], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("ERR bit offset is not an integer or out of range")
+		}
+		// Parse bit width from encoding
+		bitWidth := int64(8)
+		if len(encoding) > 1 {
+			if bw, err := strconv.ParseInt(encoding[1:], 10, 64); err == nil {
+				bitWidth = bw
+			}
+		}
+		return multiplier * bitWidth, nil
+	}
+	offset, err := strconv.ParseInt(offsetStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("ERR bit offset is not an integer or out of range")
+	}
+	return offset, nil
+}
+
+func (h *Handler) strlenOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 1 {
+		return resp.ErrWrongArgs("strlen")
+	}
+
+	length, err := ops.StrLen(ctx, args[0].Bulk)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(length)
+}
+
+func (h *Handler) getexOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("getex")
+	}
+
+	key := args[0].Bulk
+	var ttl time.Duration
+	persist := false
+
+	// Parse options: EX, PX, EXAT, PXAT, PERSIST
+	for i := 1; i < len(args); i++ {
+		opt := strings.ToUpper(args[i].Bulk)
+		switch opt {
+		case "EX":
+			if i+1 >= len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			secs, err := strconv.ParseInt(args[i+1].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+			ttl = time.Duration(secs) * time.Second
+			i++
+		case "PX":
+			if i+1 >= len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			millis, err := strconv.ParseInt(args[i+1].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+			ttl = time.Duration(millis) * time.Millisecond
+			i++
+		case "EXAT":
+			if i+1 >= len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			ts, err := strconv.ParseInt(args[i+1].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+			ttl = time.Until(time.Unix(ts, 0))
+			i++
+		case "PXAT":
+			if i+1 >= len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			ts, err := strconv.ParseInt(args[i+1].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+			ttl = time.Until(time.UnixMilli(ts))
+			i++
+		case "PERSIST":
+			persist = true
+		default:
+			return resp.Err("ERR syntax error")
+		}
+	}
+
+	value, exists, err := ops.GetEx(ctx, key, ttl, persist)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	if !exists {
+		return resp.NullBulk()
+	}
+	return resp.Bulk(value)
+}
+
+func (h *Handler) getdelOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 1 {
+		return resp.ErrWrongArgs("getdel")
+	}
+
+	value, exists, err := ops.GetDel(ctx, args[0].Bulk)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	if !exists {
+		return resp.NullBulk()
+	}
+	return resp.Bulk(value)
+}
+
+func (h *Handler) getsetOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 2 {
+		return resp.ErrWrongArgs("getset")
+	}
+
+	oldValue, exists, err := ops.GetSet(ctx, args[0].Bulk, args[1].Bulk)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	if !exists {
+		return resp.NullBulk()
+	}
+	return resp.Bulk(oldValue)
+}
+
+func (h *Handler) incrbyfloatOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 2 {
+		return resp.ErrWrongArgs("incrbyfloat")
+	}
+
+	delta, err := strconv.ParseFloat(args[1].Bulk, 64)
+	if err != nil {
+		return resp.Err("ERR value is not a valid float")
+	}
+
+	result, err := ops.IncrByFloat(ctx, args[0].Bulk, delta)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Bulk(strconv.FormatFloat(result, 'f', -1, 64))
+}
+
 // ============== Key Commands ==============
 
 func (h *Handler) delOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
@@ -656,6 +964,28 @@ func (h *Handler) hlenOp(ctx context.Context, ops storage.Operations, args []res
 		return resp.Err(err.Error())
 	}
 	return resp.Int(length)
+}
+
+func (h *Handler) hincrbyOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("hincrby")
+	}
+
+	key := args[0].Bulk
+	field := args[1].Bulk
+	increment, err := strconv.ParseInt(args[2].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+
+	result, err := ops.HIncrBy(ctx, key, field, increment)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(result)
 }
 
 func (h *Handler) hscanOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
@@ -1187,11 +1517,52 @@ func (h *Handler) zaddOp(ctx context.Context, ops storage.Operations, args []res
 	key := args[0].Bulk
 
 	// Parse optional flags (NX, XX, GT, LT, CH)
-	// For now, we'll implement basic ZADD without flags
 	i := 1
+	var nx, xx, gt, lt, ch bool
+
+	for i < len(args) {
+		flag := strings.ToUpper(args[i].Bulk)
+		switch flag {
+		case "NX":
+			nx = true
+			i++
+		case "XX":
+			xx = true
+			i++
+		case "GT":
+			gt = true
+			i++
+		case "LT":
+			lt = true
+			i++
+		case "CH":
+			ch = true
+			i++
+		default:
+			// Not a flag, must be score-member pairs
+			goto parseMembers
+		}
+	}
+
+parseMembers:
+	// NX and XX are mutually exclusive
+	if nx && xx {
+		return resp.Err("ERR XX and NX options at the same time are not compatible")
+	}
+
+	// GT and LT are mutually exclusive
+	if gt && lt {
+		return resp.Err("ERR GT and LT options at the same time are not compatible")
+	}
+
+	// GT/LT require XX or no NX
+	if (gt || lt) && nx {
+		return resp.Err("ERR GT/LT and NX options at the same time are not compatible")
+	}
 
 	// Check if we have score-member pairs
-	if (len(args)-i)%2 != 0 {
+	remaining := len(args) - i
+	if remaining == 0 || remaining%2 != 0 {
 		return resp.ErrWrongArgs("zadd")
 	}
 
@@ -1199,12 +1570,20 @@ func (h *Handler) zaddOp(ctx context.Context, ops storage.Operations, args []res
 	for i < len(args) {
 		score, err := strconv.ParseFloat(args[i].Bulk, 64)
 		if err != nil {
-			return resp.Err("value is not a valid float")
+			return resp.Err("ERR value is not a valid float")
 		}
 		member := args[i+1].Bulk
 		members = append(members, storage.ZMember{Member: member, Score: score})
 		i += 2
 	}
+
+	// For now, we ignore NX/XX/GT/LT/CH flags and do basic ZADD
+	// TODO: implement full flag support in storage layer
+	_ = nx
+	_ = xx
+	_ = gt
+	_ = lt
+	_ = ch
 
 	added, err := ops.ZAdd(ctx, key, members)
 	if err != nil {
@@ -1921,8 +2300,24 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.incrbyOp(ctx, ops, args)
 	case "DECRBY":
 		return h.decrbyOp(ctx, ops, args)
+	case "INCRBYFLOAT":
+		return h.incrbyfloatOp(ctx, ops, args)
 	case "APPEND":
 		return h.appendCmdOp(ctx, ops, args)
+	case "GETRANGE":
+		return h.getrangeOp(ctx, ops, args)
+	case "SETRANGE":
+		return h.setrangeOp(ctx, ops, args)
+	case "STRLEN":
+		return h.strlenOp(ctx, ops, args)
+	case "GETEX":
+		return h.getexOp(ctx, ops, args)
+	case "GETDEL":
+		return h.getdelOp(ctx, ops, args)
+	case "GETSET":
+		return h.getsetOp(ctx, ops, args)
+	case "BITFIELD":
+		return h.bitfieldOp(ctx, ops, args)
 
 	// Key commands
 	case "DEL":
@@ -1967,6 +2362,8 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.hvalsOp(ctx, ops, args)
 	case "HLEN":
 		return h.hlenOp(ctx, ops, args)
+	case "HINCRBY":
+		return h.hincrbyOp(ctx, ops, args)
 	case "HSCAN":
 		return h.hscanOp(ctx, ops, args)
 

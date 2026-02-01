@@ -3,8 +3,13 @@ package pubsub
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +17,30 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mnorrsken/postkeys/internal/resp"
 )
+
+// PostgreSQL channel name limit is 63 bytes (NAMEDATALEN-1)
+const maxPgChannelLen = 63
+
+// wrappedPayloadPrefix is the magic prefix for wrapped payloads (used when channel name is hashed)
+const wrappedPayloadPrefix = "\x1EPKW:"
+
+// wrappedPayload is used to encode channel + message when channel name is hashed
+type wrappedPayload struct {
+	Channel string `json:"c"`
+	Message string `json:"m"`
+}
+
+// pgChannel converts a Redis channel name to a PostgreSQL-safe channel name.
+// If the channel name is longer than 63 bytes, it's hashed to fit.
+func pgChannel(channel string) string {
+	if len(channel) <= maxPgChannelLen {
+		return channel
+	}
+	// Hash long channel names: use prefix + hash for uniqueness
+	hash := sha256.Sum256([]byte(channel))
+	// Use "h_" prefix + 40 chars of hex = 42 chars total, well under 63
+	return "h_" + hex.EncodeToString(hash[:20])
+}
 
 // Subscriber represents a client that can receive pub/sub messages
 type Subscriber interface {
@@ -43,10 +72,11 @@ type Hub struct {
 	subPatterns    map[uint64]map[string]bool       // subscriberID -> patterns
 
 	// Listener connection (dedicated for LISTEN)
-	listenerConn *pgx.Conn
-	listenerMu   sync.Mutex
-	listening    map[string]bool // channels we're currently LISTENing to
-	listenCmds   chan listenCmd  // channel for LISTEN/UNLISTEN commands
+	listenerConn   *pgx.Conn
+	listenerMu     sync.Mutex
+	listening      map[string]bool   // pg channels we're currently LISTENing to
+	pgToRedis      map[string]string // pg channel name -> redis channel name (for hashed names)
+	listenCmds     chan listenCmd    // channel for LISTEN/UNLISTEN commands
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -65,6 +95,7 @@ func NewHub(pool *pgxpool.Pool, connStr string) *Hub {
 		patterns:      make(map[string]map[uint64]Subscriber),
 		subPatterns:   make(map[uint64]map[string]bool),
 		listening:     make(map[string]bool),
+		pgToRedis:     make(map[string]string),
 		listenCmds:    make(chan listenCmd, 100), // buffered channel for commands
 		ctx:           ctx,
 		cancel:        cancel,
@@ -252,10 +283,23 @@ func (h *Hub) PUnsubscribe(sub Subscriber, patterns ...string) []int {
 // Publish publishes a message to a channel, returns the number of subscribers that received it
 func (h *Hub) Publish(ctx context.Context, channel, message string) (int64, error) {
 	// Use PostgreSQL NOTIFY to broadcast the message
-	// The message format is: channel:message
+	// Convert to pg-safe channel name (hash if too long)
+	pgChan := pgChannel(channel)
 	payload := message
 
-	_, err := h.pool.Exec(ctx, "SELECT pg_notify($1, $2)", channel, payload)
+	// If channel name was hashed, we need to include the original channel in the payload
+	// so subscribers can match it. Use JSON encoding since pg_notify doesn't allow null bytes.
+	if pgChan != channel {
+		wrapped := wrappedPayload{Channel: channel, Message: message}
+		jsonBytes, err := json.Marshal(wrapped)
+		if err != nil {
+			return 0, fmt.Errorf("failed to encode payload: %w", err)
+		}
+		// Prefix with magic marker to identify wrapped payloads
+		payload = wrappedPayloadPrefix + base64.StdEncoding.EncodeToString(jsonBytes)
+	}
+
+	_, err := h.pool.Exec(ctx, "SELECT pg_notify($1, $2)", pgChan, payload)
 	if err != nil {
 		return 0, fmt.Errorf("failed to publish: %w", err)
 	}
@@ -351,18 +395,24 @@ func (h *Hub) RemoveSubscriber(subID uint64) {
 
 // startListening queues a LISTEN command for the channel
 func (h *Hub) startListening(channel string) {
+	pgChan := pgChannel(channel)
+
 	h.listenerMu.Lock()
-	if h.listening[channel] {
+	if h.listening[pgChan] {
 		h.listenerMu.Unlock()
 		return
 	}
 	// Mark as listening immediately to avoid duplicate commands
-	h.listening[channel] = true
+	h.listening[pgChan] = true
+	// Store mapping from pg channel to redis channel
+	if pgChan != channel {
+		h.pgToRedis[pgChan] = channel
+	}
 	h.listenerMu.Unlock()
 
 	// Send command to listener goroutine (non-blocking with buffered channel)
 	select {
-	case h.listenCmds <- listenCmd{channel: channel, listen: true}:
+	case h.listenCmds <- listenCmd{channel: pgChan, listen: true}:
 		if h.debug {
 			log.Printf("[DEBUG] Queued LISTEN for channel: %s", channel)
 		}
@@ -373,17 +423,20 @@ func (h *Hub) startListening(channel string) {
 
 // stopListening queues an UNLISTEN command for the channel
 func (h *Hub) stopListening(channel string) {
+	pgChan := pgChannel(channel)
+
 	h.listenerMu.Lock()
-	if !h.listening[channel] {
+	if !h.listening[pgChan] {
 		h.listenerMu.Unlock()
 		return
 	}
-	delete(h.listening, channel)
+	delete(h.listening, pgChan)
+	delete(h.pgToRedis, pgChan)
 	h.listenerMu.Unlock()
 
 	// Send command to listener goroutine
 	select {
-	case h.listenCmds <- listenCmd{channel: channel, listen: false}:
+	case h.listenCmds <- listenCmd{channel: pgChan, listen: false}:
 		if h.debug {
 			log.Printf("[DEBUG] Queued UNLISTEN for channel: %s", channel)
 		}
@@ -456,11 +509,39 @@ func (h *Hub) listenLoop() {
 			log.Printf("[DEBUG] Received notification on channel %s: %s", notification.Channel, notification.Payload)
 		}
 
+		// Determine the original Redis channel name and extract the actual payload
+		pgChan := notification.Channel
+		redisChannel := pgChan
+		payload := notification.Payload
+
+		// Check if this is a hashed channel (starts with "h_")
+		if strings.HasPrefix(pgChan, "h_") {
+			// Look up the original channel name from our mapping
+			h.listenerMu.Lock()
+			if origChannel, ok := h.pgToRedis[pgChan]; ok {
+				redisChannel = origChannel
+			}
+			h.listenerMu.Unlock()
+
+			// Check if the payload is wrapped (from publishers that hashed the channel)
+			if strings.HasPrefix(payload, wrappedPayloadPrefix) {
+				// Decode the wrapped payload
+				encoded := payload[len(wrappedPayloadPrefix):]
+				if jsonBytes, err := base64.StdEncoding.DecodeString(encoded); err == nil {
+					var wrapped wrappedPayload
+					if err := json.Unmarshal(jsonBytes, &wrapped); err == nil {
+						redisChannel = wrapped.Channel
+						payload = wrapped.Message
+					}
+				}
+			}
+		}
+
 		// Deliver to channel subscribers
-		h.deliverToChannel(notification.Channel, notification.Payload)
+		h.deliverToChannel(redisChannel, payload)
 
 		// Deliver to pattern subscribers
-		h.deliverToPatterns(notification.Channel, notification.Payload)
+		h.deliverToPatterns(redisChannel, payload)
 	}
 }
 

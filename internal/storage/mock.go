@@ -189,6 +189,282 @@ func (m *MockStore) Append(ctx context.Context, key, value string) (int64, error
 	return int64(len(m.strings[key])), nil
 }
 
+func (m *MockStore) GetRange(ctx context.Context, key string, start, end int64) (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return "", nil
+	}
+
+	value, ok := m.strings[key]
+	if !ok {
+		return "", nil
+	}
+
+	length := int64(len(value))
+	if length == 0 {
+		return "", nil
+	}
+
+	if start < 0 {
+		start = length + start
+	}
+	if end < 0 {
+		end = length + end
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end >= length {
+		end = length - 1
+	}
+	if start > end || start >= length {
+		return "", nil
+	}
+
+	return value[start : end+1], nil
+}
+
+func (m *MockStore) SetRange(ctx context.Context, key string, offset int64, value string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		delete(m.strings, key)
+		delete(m.keyTypes, key)
+		delete(m.expiresAt, key)
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeString {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	existing := m.strings[key]
+	endPos := int(offset) + len(value)
+	if len(existing) < endPos {
+		newBuf := make([]byte, endPos)
+		copy(newBuf, existing)
+		existing = string(newBuf)
+	}
+
+	result := []byte(existing)
+	copy(result[offset:], value)
+	m.strings[key] = string(result)
+	m.keyTypes[key] = TypeString
+
+	return int64(len(m.strings[key])), nil
+}
+
+func (m *MockStore) BitField(ctx context.Context, key string, ops []BitFieldOp) ([]int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		delete(m.strings, key)
+		delete(m.keyTypes, key)
+		delete(m.expiresAt, key)
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeString {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	value := []byte(m.strings[key])
+	results := make([]int64, 0, len(ops))
+	modified := false
+
+	for _, op := range ops {
+		signed := len(op.Encoding) > 0 && op.Encoding[0] == 'i'
+		bitWidth := int64(8)
+		if len(op.Encoding) > 1 {
+			if bw, err := strconv.ParseInt(op.Encoding[1:], 10, 64); err == nil && bw > 0 && bw <= 64 {
+				bitWidth = bw
+			}
+		}
+
+		bitOffset := op.Offset
+		neededBytes := (bitOffset + bitWidth + 7) / 8
+		if int64(len(value)) < neededBytes {
+			newValue := make([]byte, neededBytes)
+			copy(newValue, value)
+			value = newValue
+		}
+
+		switch op.OpType {
+		case "GET":
+			results = append(results, mockGetBitField(value, bitOffset, bitWidth, signed))
+		case "SET":
+			results = append(results, mockGetBitField(value, bitOffset, bitWidth, signed))
+			mockSetBitField(value, bitOffset, bitWidth, op.Value)
+			modified = true
+		case "INCRBY":
+			oldVal := mockGetBitField(value, bitOffset, bitWidth, signed)
+			newVal := oldVal + op.Value
+			if signed {
+				max := int64(1) << (bitWidth - 1)
+				for newVal >= max {
+					newVal -= max * 2
+				}
+				for newVal < -max {
+					newVal += max * 2
+				}
+			} else {
+				newVal &= (1 << bitWidth) - 1
+			}
+			mockSetBitField(value, bitOffset, bitWidth, newVal)
+			results = append(results, newVal)
+			modified = true
+		}
+	}
+
+	if modified {
+		m.strings[key] = string(value)
+		m.keyTypes[key] = TypeString
+	}
+
+	return results, nil
+}
+
+func mockGetBitField(data []byte, bitOffset, bitWidth int64, signed bool) int64 {
+	var result int64
+	for i := int64(0); i < bitWidth; i++ {
+		byteIdx := (bitOffset + i) / 8
+		bitIdx := 7 - ((bitOffset + i) % 8)
+		if byteIdx < int64(len(data)) && data[byteIdx]&(1<<bitIdx) != 0 {
+			result |= 1 << (bitWidth - 1 - i)
+		}
+	}
+	if signed && bitWidth > 0 && (result&(1<<(bitWidth-1))) != 0 {
+		result |= ^((1 << bitWidth) - 1)
+	}
+	return result
+}
+
+func mockSetBitField(data []byte, bitOffset, bitWidth, value int64) {
+	for i := int64(0); i < bitWidth; i++ {
+		byteIdx := (bitOffset + i) / 8
+		bitIdx := 7 - ((bitOffset + i) % 8)
+		if byteIdx < int64(len(data)) {
+			if (value>>(bitWidth-1-i))&1 != 0 {
+				data[byteIdx] |= 1 << bitIdx
+			} else {
+				data[byteIdx] &^= 1 << bitIdx
+			}
+		}
+	}
+}
+
+func (m *MockStore) StrLen(ctx context.Context, key string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return 0, nil
+	}
+
+	if val, ok := m.strings[key]; ok {
+		return int64(len(val)), nil
+	}
+	return 0, nil
+}
+
+func (m *MockStore) GetEx(ctx context.Context, key string, ttl time.Duration, persist bool) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		delete(m.strings, key)
+		delete(m.keyTypes, key)
+		delete(m.expiresAt, key)
+		return "", false, nil
+	}
+
+	val, ok := m.strings[key]
+	if !ok {
+		return "", false, nil
+	}
+
+	if persist {
+		delete(m.expiresAt, key)
+	} else if ttl > 0 {
+		m.expiresAt[key] = time.Now().Add(ttl)
+	}
+
+	return val, true, nil
+}
+
+func (m *MockStore) GetDel(ctx context.Context, key string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		delete(m.strings, key)
+		delete(m.keyTypes, key)
+		delete(m.expiresAt, key)
+		return "", false, nil
+	}
+
+	val, ok := m.strings[key]
+	if !ok {
+		return "", false, nil
+	}
+
+	delete(m.strings, key)
+	delete(m.keyTypes, key)
+	delete(m.expiresAt, key)
+
+	return val, true, nil
+}
+
+func (m *MockStore) GetSet(ctx context.Context, key, value string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		delete(m.strings, key)
+		delete(m.keyTypes, key)
+		delete(m.expiresAt, key)
+	}
+
+	oldVal, exists := m.strings[key]
+	m.strings[key] = value
+	m.keyTypes[key] = TypeString
+	delete(m.expiresAt, key) // GETSET clears TTL
+
+	return oldVal, exists, nil
+}
+
+func (m *MockStore) IncrByFloat(ctx context.Context, key string, delta float64) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		delete(m.strings, key)
+		delete(m.keyTypes, key)
+		delete(m.expiresAt, key)
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeString {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	var current float64
+	if val, ok := m.strings[key]; ok {
+		var err error
+		current, err = strconv.ParseFloat(val, 64)
+		if err != nil {
+			return 0, fmt.Errorf("ERR value is not a valid float")
+		}
+	}
+
+	newVal := current + delta
+	m.strings[key] = strconv.FormatFloat(newVal, 'f', -1, 64)
+	m.keyTypes[key] = TypeString
+
+	return newVal, nil
+}
+
 // ============== Key Commands ==============
 
 func (m *MockStore) Del(ctx context.Context, keys []string) (int64, error) {
@@ -596,6 +872,40 @@ func (m *MockStore) HLen(ctx context.Context, key string) (int64, error) {
 		return int64(len(h)), nil
 	}
 	return 0, nil
+}
+
+func (m *MockStore) HIncrBy(ctx context.Context, key, field string, increment int64) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		delete(m.hashes, key)
+		delete(m.keyTypes, key)
+		delete(m.expiresAt, key)
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	if m.hashes[key] == nil {
+		m.hashes[key] = make(map[string]string)
+	}
+
+	var currentValue int64 = 0
+	if val, ok := m.hashes[key][field]; ok {
+		var err error
+		currentValue, err = strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("ERR hash value is not an integer")
+		}
+	}
+
+	newValue := currentValue + increment
+	m.hashes[key][field] = strconv.FormatInt(newValue, 10)
+	m.keyTypes[key] = TypeHash
+
+	return newValue, nil
 }
 
 // ============== List Commands ==============

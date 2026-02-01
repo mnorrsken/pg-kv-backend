@@ -10,7 +10,7 @@ A Redis 7 API-compatible server that uses PostgreSQL as the backend storage.
 - Lua scripting support (EVAL/EVALSHA/SCRIPT)
 - Transaction support (MULTI/EXEC/DISCARD)
 - Supports common Redis commands:
-  - **String commands**: GET, SET, SETNX, SETEX, MGET, MSET, INCR, DECR, INCRBY, DECRBY, APPEND
+  - **String commands**: GET, SET, SETNX, SETEX, MGET, MSET, INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN, GETRANGE, SETRANGE, GETEX, GETDEL, GETSET, BITFIELD
   - **Key commands**: DEL, UNLINK, EXISTS, EXPIRE, TTL, PTTL, PERSIST, KEYS, TYPE, RENAME, SCAN
   - **Hash commands**: HGET, HSET, HDEL, HGETALL, HMGET, HMSET, HEXISTS, HKEYS, HVALS, HLEN, HSCAN
   - **List commands**: LPUSH, RPUSH, LPOP, RPOP, BLPOP, BRPOP, LLEN, LRANGE, LINDEX, LREM, LTRIM, RPOPLPUSH
