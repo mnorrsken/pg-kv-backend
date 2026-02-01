@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11] - 2026-02-01
+
+### Added
+- Production profiling support via pprof endpoints on metrics server
+  - CPU profile: `/debug/pprof/profile?seconds=30`
+  - Heap profile: `/debug/pprof/heap`
+  - Goroutine dump: `/debug/pprof/goroutine`
+
+### Fixed
+- High CPU usage caused by 100ms polling loop in pub/sub listener
+  - Changed to adaptive timeout (5s idle, 100ms when commands pending)
+
 ## [0.10] - 2026-02-01
 
 ### Added
