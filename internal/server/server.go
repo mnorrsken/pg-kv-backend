@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mnorrsken/postkeys/internal/handler"
+	"github.com/mnorrsken/postkeys/internal/metrics"
 	"github.com/mnorrsken/postkeys/internal/pubsub"
 	"github.com/mnorrsken/postkeys/internal/resp"
 )
@@ -122,6 +123,8 @@ func (s *Server) acceptLoop(ctx context.Context) {
 		}
 
 		s.wg.Add(1)
+		metrics.ConnectionsTotal.Inc()
+		metrics.ActiveConnections.Inc()
 		go s.handleConnection(ctx, conn)
 	}
 }
@@ -129,6 +132,7 @@ func (s *Server) acceptLoop(ctx context.Context) {
 func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	defer s.wg.Done()
 	defer conn.Close()
+	defer metrics.ActiveConnections.Dec()
 
 	reader := resp.NewReaderWithDebug(conn, s.debug)
 	writer := resp.NewWriter(conn)
