@@ -3238,7 +3238,108 @@ func TestEvalListOperations(t *testing.T) {
 	}
 }
 
+// TestEvalSidekiqZPopByScore tests the exact Sidekiq LUA_ZPOPBYSCORE script
+// This is the critical script that Sidekiq's scheduler uses
+func TestEvalSidekiqZPopByScore(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Sidekiq's LUA_ZPOPBYSCORE script (copied exactly from sidekiq/scheduled.rb)
+	script := `
+		local key, now = KEYS[1], ARGV[1]
+		local jobs = redis.call("zrange", key, "-inf", now, "byscore", "limit", 0, 1)
+		if jobs[1] then
+			redis.call("zrem", key, jobs[1])
+			return jobs[1]
+		end
+	`
+
+	// Add scheduled jobs
+	ts.client.ZAdd(ctx, "schedule",
+		redis.Z{Score: 100, Member: `{"job":"job1"}`},
+		redis.Z{Score: 500, Member: `{"job":"job2"}`},
+		redis.Z{Score: 1100, Member: `{"job":"job3"}`},
+	)
+
+	// Pop first ready job
+	result1, err := ts.client.Eval(ctx, script, []string{"schedule"}, "1000").Result()
+	if err != nil {
+		t.Fatalf("EVAL zpopbyscore failed: %v", err)
+	}
+	if result1 != `{"job":"job1"}` {
+		t.Errorf("Expected job1, got %v", result1)
+	}
+
+	// Pop second ready job
+	result2, err := ts.client.Eval(ctx, script, []string{"schedule"}, "1000").Result()
+	if err != nil {
+		t.Fatalf("EVAL zpopbyscore failed: %v", err)
+	}
+	if result2 != `{"job":"job2"}` {
+		t.Errorf("Expected job2, got %v", result2)
+	}
+
+	// No more ready jobs (job3 is scheduled for 1100)
+	result3, err := ts.client.Eval(ctx, script, []string{"schedule"}, "1000").Result()
+	if err != redis.Nil {
+		t.Errorf("Expected nil result, got %v (err: %v)", result3, err)
+	}
+
+	// Verify job3 is still there
+	count, _ := ts.client.ZCard(ctx, "schedule").Result()
+	if count != 1 {
+		t.Errorf("Expected 1 remaining job, got %d", count)
+	}
+}
+
 // ============== Additional Sorted Set Command Tests (Sidekiq) ==============
+
+// TestZRangeByscore tests the Redis 6.2+ unified ZRANGE with BYSCORE option
+// This is the syntax used by Sidekiq's zpopbyscore script
+func TestZRangeByscoreUnified(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Add members with different scores (timestamps)
+	now := 1000.0
+	ts.client.ZAdd(ctx, "schedule",
+		redis.Z{Score: 100, Member: "job1"},
+		redis.Z{Score: 500, Member: "job2"},
+		redis.Z{Score: 900, Member: "job3"},
+		redis.Z{Score: 1100, Member: "job4"},
+		redis.Z{Score: 1500, Member: "job5"},
+	)
+
+	// Use raw Do to test the unified ZRANGE BYSCORE LIMIT syntax
+	// ZRANGE schedule -inf 1000 BYSCORE LIMIT 0 1
+	result, err := ts.client.Do(ctx, "ZRANGE", "schedule", "-inf", now, "BYSCORE", "LIMIT", "0", "1").Result()
+	if err != nil {
+		t.Fatalf("ZRANGE BYSCORE failed: %v", err)
+	}
+	arr, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("Expected array result, got %T", result)
+	}
+	if len(arr) != 1 {
+		t.Errorf("Expected 1 member, got %d: %v", len(arr), arr)
+	} else if arr[0] != "job1" {
+		t.Errorf("Expected job1, got %v", arr[0])
+	}
+
+	// Get more results
+	result2, err := ts.client.Do(ctx, "ZRANGE", "schedule", "-inf", now, "BYSCORE", "LIMIT", "0", "100").Result()
+	if err != nil {
+		t.Fatalf("ZRANGE BYSCORE LIMIT failed: %v", err)
+	}
+	arr2, _ := result2.([]interface{})
+	if len(arr2) != 3 {
+		t.Errorf("Expected 3 members (job1, job2, job3), got %d: %v", len(arr2), arr2)
+	}
+}
 
 func TestZRangeByScore(t *testing.T) {
 	ts := newTestServer(t, "")

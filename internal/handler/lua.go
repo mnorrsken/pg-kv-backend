@@ -125,7 +125,14 @@ func (le *luaExecutor) Execute(script string) (resp.Value, error) {
 		return resp.Value{}, fmt.Errorf("ERR Error running script: %v", err)
 	}
 
-	// Get the return value
+	// Get the return value (if any)
+	// Check stack size - script may not return anything
+	top := L.GetTop()
+	if top == 0 {
+		// No return value, return nil
+		return resp.NullBulk(), nil
+	}
+
 	result := L.Get(-1)
 	L.Pop(1)
 
@@ -381,7 +388,7 @@ func (h *Handler) evalshaOp(ctx context.Context, ops storage.Operations, args []
 	// Look up the script
 	script, ok := scriptCache.Get(sha)
 	if !ok {
-		return resp.Err("NOSCRIPT No matching script. Please use EVAL.")
+		return resp.ErrCustom("NOSCRIPT No matching script. Please use EVAL.")
 	}
 
 	// Extract KEYS and ARGV

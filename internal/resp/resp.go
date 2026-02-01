@@ -330,9 +330,15 @@ func OK() Value {
 	return Value{Type: SimpleString, Str: "OK"}
 }
 
-// Err returns an error value
+// Err returns an error value with ERR prefix
 func Err(msg string) Value {
 	return Value{Type: Error, Str: "ERR " + msg}
+}
+
+// ErrCustom returns an error value with a custom prefix (no ERR prepended)
+// Use for errors like NOSCRIPT, WRONGTYPE, MOVED, etc.
+func ErrCustom(msg string) Value {
+	return Value{Type: Error, Str: msg}
 }
 
 // ErrWrongType returns a wrong type error

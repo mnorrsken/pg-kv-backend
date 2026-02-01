@@ -4,8 +4,10 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"math"
 	"runtime"
 	"strconv"
 	"strings"
@@ -14,6 +16,30 @@ import (
 	"github.com/mnorrsken/postkeys/internal/resp"
 	"github.com/mnorrsken/postkeys/internal/storage"
 )
+
+// parseScoreBound parses a Redis score bound string (e.g., "-inf", "+inf", "1.5", "(1.5")
+func parseScoreBound(s string) (float64, error) {
+	if s == "-inf" {
+		return math.Inf(-1), nil
+	}
+	if s == "+inf" || s == "inf" {
+		return math.Inf(1), nil
+	}
+	// Handle exclusive bounds (e.g., "(1.5")
+	exclusive := strings.HasPrefix(s, "(")
+	if exclusive {
+		s = s[1:]
+	}
+	score, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, errors.New("min or max is not a float")
+	}
+	if exclusive {
+		// Approximate exclusivity with tiny offset
+		score += 1e-9
+	}
+	return score, nil
+}
 
 // ============== Unified Command Handlers ==============
 // These handlers work with storage.Operations interface, which is implemented
@@ -1196,18 +1222,98 @@ func (h *Handler) zrangeOp(ctx context.Context, ops storage.Operations, args []r
 	}
 
 	key := args[0].Bulk
-	start, err := strconv.ParseInt(args[1].Bulk, 10, 64)
-	if err != nil {
-		return resp.Err("value is not an integer or out of range")
-	}
-	stop, err := strconv.ParseInt(args[2].Bulk, 10, 64)
-	if err != nil {
-		return resp.Err("value is not an integer or out of range")
+	startArg := args[1].Bulk
+	stopArg := args[2].Bulk
+
+	// Parse optional modifiers
+	withScores := false
+	byScore := false
+	rev := false
+	var offset, count int64 = 0, -1
+
+	for i := 3; i < len(args); i++ {
+		switch strings.ToUpper(args[i].Bulk) {
+		case "WITHSCORES":
+			withScores = true
+		case "BYSCORE":
+			byScore = true
+		case "BYLEX":
+			// BYLEX not fully supported, treat as BYSCORE for now
+			return resp.Err("ERR BYLEX not supported")
+		case "REV":
+			rev = true
+		case "LIMIT":
+			if i+2 >= len(args) {
+				return resp.ErrWrongArgs("zrange")
+			}
+			var err error
+			offset, err = strconv.ParseInt(args[i+1].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("value is not an integer or out of range")
+			}
+			count, err = strconv.ParseInt(args[i+2].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("value is not an integer or out of range")
+			}
+			i += 2
+		}
 	}
 
-	withScores := false
-	if len(args) > 3 && strings.ToUpper(args[3].Bulk) == "WITHSCORES" {
-		withScores = true
+	// Handle BYSCORE mode (Redis 6.2+ unified ZRANGE)
+	if byScore {
+		min, err := parseScoreBound(startArg)
+		if err != nil {
+			return resp.Err("min or max is not a float")
+		}
+		max, err := parseScoreBound(stopArg)
+		if err != nil {
+			return resp.Err("min or max is not a float")
+		}
+
+		if rev {
+			// Swap min/max for REV
+			min, max = max, min
+		}
+
+		members, err := ops.ZRangeByScore(ctx, key, min, max, withScores, offset, count)
+		if err != nil {
+			if strings.Contains(err.Error(), "WRONGTYPE") {
+				return resp.ErrWrongType()
+			}
+			return resp.Err(err.Error())
+		}
+
+		if rev {
+			// Reverse the result for REV
+			for i, j := 0, len(members)-1; i < j; i, j = i+1, j-1 {
+				members[i], members[j] = members[j], members[i]
+			}
+		}
+
+		if withScores {
+			result := make([]resp.Value, 0, len(members)*2)
+			for _, m := range members {
+				result = append(result, resp.Bulk(m.Member))
+				result = append(result, resp.Bulk(strconv.FormatFloat(m.Score, 'f', -1, 64)))
+			}
+			return resp.Arr(result...)
+		}
+
+		result := make([]resp.Value, len(members))
+		for i, m := range members {
+			result[i] = resp.Bulk(m.Member)
+		}
+		return resp.Arr(result...)
+	}
+
+	// Standard index-based ZRANGE
+	start, err := strconv.ParseInt(startArg, 10, 64)
+	if err != nil {
+		return resp.Err("value is not an integer or out of range")
+	}
+	stop, err := strconv.ParseInt(stopArg, 10, 64)
+	if err != nil {
+		return resp.Err("value is not an integer or out of range")
 	}
 
 	members, err := ops.ZRange(ctx, key, start, stop, withScores)
@@ -1216,6 +1322,13 @@ func (h *Handler) zrangeOp(ctx context.Context, ops storage.Operations, args []r
 			return resp.ErrWrongType()
 		}
 		return resp.Err(err.Error())
+	}
+
+	if rev {
+		// Reverse the result for REV
+		for i, j := 0, len(members)-1; i < j; i, j = i+1, j-1 {
+			members[i], members[j] = members[j], members[i]
+		}
 	}
 
 	if withScores {
