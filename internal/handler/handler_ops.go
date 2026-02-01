@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"runtime"
 	"strconv"
@@ -841,8 +840,6 @@ func (h *Handler) hgetallOp(ctx context.Context, ops storage.Operations, args []
 	if err != nil {
 		return resp.Err(err.Error())
 	}
-
-	log.Printf("[DEBUG] HGETALL %s returning %d fields", args[0].Bulk, len(fields))
 
 	// Use RESP3 Map type if client supports it, otherwise use flat array (RESP2)
 	if UseRESP3(ctx) {
