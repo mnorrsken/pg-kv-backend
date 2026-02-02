@@ -15,6 +15,13 @@ All notable changes to this project will be documented in this file.
   - LPUSH/RPUSH: Batch insert for multiple values
   - New `deleteKeysFromAllTables` for batch key deletion
 
+### Fixed
+- **BRPOP/BLPOP multi-key support**: Now correctly waits on all keys, not just the first one
+- **Duplicate pg_notify removed**: LPUSH/RPUSH no longer send redundant keyspace notifications (listNotifier handles this)
+
+### Improved
+- **Exponential backoff for LISTEN loops**: Pub/sub and list notifier now use exponential backoff (50ms-2s) instead of fixed 100ms polling, reducing CPU usage when idle
+
 ## [0.16] - 2026-02-02
 
 ### Changed

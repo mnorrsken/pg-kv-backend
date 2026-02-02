@@ -60,6 +60,7 @@ type TransactionClientState interface {
 type ListNotifier interface {
 	NotifyPush(ctx context.Context, key string) error
 	WaitForKey(ctx context.Context, key string, timeout time.Duration) bool
+	WaitForKeys(ctx context.Context, keys []string, timeout time.Duration) string
 }
 
 // Handler processes Redis commands

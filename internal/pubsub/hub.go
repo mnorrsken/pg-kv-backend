@@ -477,9 +477,13 @@ func (h *Hub) processListenCmds() {
 func (h *Hub) listenLoop() {
 	defer h.wg.Done()
 
-	// Short timeout to ensure LISTEN/UNLISTEN commands are processed promptly
-	// This is a trade-off between CPU usage and responsiveness
-	const notifyTimeout = 100 * time.Millisecond
+	// Exponential backoff for idle periods
+	// Start at 50ms, double on each timeout up to 2s max
+	const (
+		minTimeout = 50 * time.Millisecond
+		maxTimeout = 2 * time.Second
+	)
+	currentTimeout := minTimeout
 
 	for {
 		select {
@@ -491,8 +495,8 @@ func (h *Hub) listenLoop() {
 		// Process any pending LISTEN/UNLISTEN commands first
 		h.processListenCmds()
 
-		// Wait for notification
-		ctx, cancel := context.WithTimeout(h.ctx, notifyTimeout)
+		// Wait for notification with exponential backoff
+		ctx, cancel := context.WithTimeout(h.ctx, currentTimeout)
 		notification, err := h.listenerConn.WaitForNotification(ctx)
 		cancel()
 
@@ -500,9 +504,18 @@ func (h *Hub) listenLoop() {
 			if h.ctx.Err() != nil {
 				return // Context cancelled, clean shutdown
 			}
-			// Timeout is expected, continue to process commands
+			// Timeout - increase backoff (up to max)
+			if currentTimeout < maxTimeout {
+				currentTimeout *= 2
+				if currentTimeout > maxTimeout {
+					currentTimeout = maxTimeout
+				}
+			}
 			continue
 		}
+
+		// Got a notification - reset backoff to minimum for responsiveness
+		currentTimeout = minTimeout
 
 		if h.debug {
 			log.Printf("[DEBUG] Received notification on channel %s: %s", notification.Channel, notification.Payload)

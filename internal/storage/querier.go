@@ -1341,9 +1341,6 @@ func (o queryOps) lPush(ctx context.Context, q Querier, key string, values []str
 		return 0, fmt.Errorf("failed to get list length: %w", err)
 	}
 
-	// Notify any waiting BLPOP/BRPOP clients
-	_, _ = q.Exec(ctx, "SELECT pg_notify($1, 'lpush')", keyspaceChannel(key))
-
 	return length, nil
 }
 
@@ -1404,9 +1401,6 @@ func (o queryOps) rPush(ctx context.Context, q Querier, key string, values []str
 	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length); err != nil {
 		return 0, fmt.Errorf("failed to get list length: %w", err)
 	}
-
-	// Notify any waiting BLPOP/BRPOP clients
-	_, _ = q.Exec(ctx, "SELECT pg_notify($1, 'rpush')", keyspaceChannel(key))
 
 	return length, nil
 }

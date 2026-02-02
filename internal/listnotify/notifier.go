@@ -91,25 +91,40 @@ func (n *Notifier) NotifyPush(ctx context.Context, key string) error {
 // WaitForKey waits for a notification on the given key or until timeout/cancellation
 // Returns true if notified, false if timeout or cancelled
 func (n *Notifier) WaitForKey(ctx context.Context, key string, timeout time.Duration) bool {
+	return n.WaitForKeys(ctx, []string{key}, timeout) != ""
+}
+
+// WaitForKeys waits for a notification on any of the given keys or until timeout/cancellation
+// Returns the key that was notified, or empty string if timeout or cancelled
+func (n *Notifier) WaitForKeys(ctx context.Context, keys []string, timeout time.Duration) string {
+	if len(keys) == 0 {
+		return ""
+	}
+
+	// Single channel to receive notifications from any key
 	ch := make(chan string, 1)
 
-	// Register the subscriber
+	// Register the subscriber for all keys
 	n.mu.Lock()
-	n.subscribers[key] = append(n.subscribers[key], ch)
+	for _, key := range keys {
+		n.subscribers[key] = append(n.subscribers[key], ch)
+	}
 	n.mu.Unlock()
 
-	// Ensure cleanup
+	// Ensure cleanup for all keys
 	defer func() {
 		n.mu.Lock()
-		channels := n.subscribers[key]
-		for i, c := range channels {
-			if c == ch {
-				n.subscribers[key] = append(channels[:i], channels[i+1:]...)
-				break
+		for _, key := range keys {
+			channels := n.subscribers[key]
+			for i, c := range channels {
+				if c == ch {
+					n.subscribers[key] = append(channels[:i], channels[i+1:]...)
+					break
+				}
 			}
-		}
-		if len(n.subscribers[key]) == 0 {
-			delete(n.subscribers, key)
+			if len(n.subscribers[key]) == 0 {
+				delete(n.subscribers, key)
+			}
 		}
 		n.mu.Unlock()
 		close(ch)
@@ -124,20 +139,28 @@ func (n *Notifier) WaitForKey(ctx context.Context, key string, timeout time.Dura
 	}
 
 	select {
-	case <-ch:
-		return true
+	case key := <-ch:
+		return key
 	case <-timer:
-		return false
+		return ""
 	case <-ctx.Done():
-		return false
+		return ""
 	case <-n.ctx.Done():
-		return false
+		return ""
 	}
 }
 
 // listenLoop continuously listens for PostgreSQL notifications
 func (n *Notifier) listenLoop() {
 	defer n.wg.Done()
+
+	// Exponential backoff for idle periods
+	// Start at 50ms, double on each timeout up to 2s max
+	const (
+		minTimeout = 50 * time.Millisecond
+		maxTimeout = 2 * time.Second
+	)
+	currentTimeout := minTimeout
 
 	for {
 		select {
@@ -146,8 +169,8 @@ func (n *Notifier) listenLoop() {
 		default:
 		}
 
-		// Wait for notification with a timeout for graceful shutdown
-		ctx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
+		// Wait for notification with exponential backoff
+		ctx, cancel := context.WithTimeout(n.ctx, currentTimeout)
 		notification, err := n.listenerConn.WaitForNotification(ctx)
 		cancel()
 
@@ -155,8 +178,18 @@ func (n *Notifier) listenLoop() {
 			if n.ctx.Err() != nil {
 				return
 			}
+			// Timeout - increase backoff (up to max)
+			if currentTimeout < maxTimeout {
+				currentTimeout *= 2
+				if currentTimeout > maxTimeout {
+					currentTimeout = maxTimeout
+				}
+			}
 			continue
 		}
+
+		// Got a notification - reset backoff to minimum for responsiveness
+		currentTimeout = minTimeout
 
 		key := notification.Payload
 		if n.debug {

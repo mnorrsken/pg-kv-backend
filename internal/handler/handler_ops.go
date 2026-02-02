@@ -1385,8 +1385,7 @@ func (h *Handler) brpopOp(ctx context.Context, ops storage.Operations, args []re
 		// Use LISTEN/NOTIFY if available, otherwise fall back to polling
 		if h.listNotifier != nil {
 			// Wait for notification on any of the keys
-			// We use first key for simplicity - a more complete impl would wait on all
-			if h.listNotifier.WaitForKey(ctx, keys[0], waitTime) {
+			if h.listNotifier.WaitForKeys(ctx, keys, waitTime) != "" {
 				continue // Got notification, try to pop again
 			}
 		} else {
@@ -1460,7 +1459,7 @@ func (h *Handler) blpopOp(ctx context.Context, ops storage.Operations, args []re
 		// Use LISTEN/NOTIFY if available, otherwise fall back to polling
 		if h.listNotifier != nil {
 			// Wait for notification on any of the keys
-			if h.listNotifier.WaitForKey(ctx, keys[0], waitTime) {
+			if h.listNotifier.WaitForKeys(ctx, keys, waitTime) != "" {
 				continue // Got notification, try to pop again
 			}
 		} else {
