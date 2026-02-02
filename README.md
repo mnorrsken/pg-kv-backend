@@ -9,21 +9,26 @@ A Redis 7 API-compatible server that uses PostgreSQL as the backend storage.
 - Full pub/sub support with RESP3 Push messages
 - Lua scripting support (EVAL/EVALSHA/SCRIPT)
 - Transaction support (MULTI/EXEC/DISCARD)
-- Supports common Redis commands:
-  - **String commands**: GET, SET, SETNX, SETEX, MGET, MSET, INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN, GETRANGE, SETRANGE, GETEX, GETDEL, GETSET, BITFIELD
-  - **Bitmap commands**: SETBIT, GETBIT, BITCOUNT, BITOP, BITPOS
-  - **Key commands**: DEL, UNLINK, EXISTS, EXPIRE, EXPIREAT, PEXPIRE, PEXPIREAT, TTL, PTTL, PERSIST, KEYS, TYPE, RENAME, COPY, SCAN
-  - **Hash commands**: HGET, HSET, HDEL, HGETALL, HMGET, HMSET, HEXISTS, HKEYS, HVALS, HLEN, HINCRBY, HINCRBYFLOAT, HSETNX, HSCAN
-  - **List commands**: LPUSH, RPUSH, LPOP, RPOP, BLPOP, BRPOP, LLEN, LRANGE, LINDEX, LPOS, LSET, LINSERT, LREM, LTRIM, RPOPLPUSH
-  - **Set commands**: SADD, SREM, SMEMBERS, SISMEMBER, SMISMEMBER, SCARD, SINTER, SINTERSTORE, SUNION, SUNIONSTORE, SDIFF, SDIFFSTORE, SSCAN
-  - **Sorted set commands**: ZADD, ZRANGE (with BYSCORE/REV/LIMIT), ZRANGEBYSCORE, ZSCORE, ZREM, ZREMRANGEBYSCORE, ZREMRANGEBYRANK, ZCARD, ZINCRBY, ZPOPMIN, ZPOPMAX, ZRANK, ZREVRANK, ZCOUNT, ZSCAN, ZUNIONSTORE, ZINTERSTORE
-  - **HyperLogLog commands**: PFADD, PFCOUNT, PFMERGE
-  - **Pub/Sub commands**: SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH
-  - **Transaction commands**: MULTI, EXEC, DISCARD, WATCH, UNWATCH
-  - **Scripting commands**: EVAL, EVALSHA, SCRIPT LOAD, SCRIPT EXISTS, SCRIPT FLUSH
-  - **Connection commands**: PING, ECHO, AUTH, QUIT, HELLO
-  - **Client commands**: CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT SETINFO, CLIENT INFO, CLIENT LIST
-  - **Server commands**: INFO, DBSIZE, FLUSHDB, FLUSHALL, COMMAND, CLUSTER (standalone mode)
+- Supports most common Redis commands for strings, hashes, lists, sets, sorted sets, HyperLogLog, pub/sub, and more
+
+### Unsupported Commands
+
+The following Redis command groups and features are **not supported**:
+
+| Category | Unsupported |
+|----------|-------------|
+| **Streams** | XADD, XREAD, XRANGE, XGROUP, etc. (entire stream API) |
+| **Cluster** | Cluster mode (CLUSTER commands return standalone mode) |
+| **Replication** | REPLICAOF, SLAVEOF, WAIT, PSYNC |
+| **Geospatial** | GEOADD, GEODIST, GEOSEARCH, etc. |
+| **Time Series** | RedisTimeSeries module commands |
+| **JSON** | RedisJSON module commands |
+| **Search** | RediSearch module commands |
+| **ACL** | ACL commands (use `REDIS_PASSWORD` for simple auth) |
+| **Blocking Streams** | XREADGROUP, XAUTOCLAIM with blocking |
+| **Memory Management** | MEMORY, OBJECT FREQ/IDLETIME, DEBUG |
+| **Slow Log** | SLOWLOG commands |
+| **Modules** | MODULE LOAD and custom modules |
 
 ## Protocol Support
 
@@ -77,8 +82,8 @@ Scripts have access to:
 
 ## Requirements
 
-- Go 1.21+
-- PostgreSQL 14+
+- Go 1.24+
+- PostgreSQL 16+
 
 ## Installation
 
@@ -121,8 +126,8 @@ export CACHE_MAX_SIZE=10000
 **Features:**
 - Cache is **opt-in** and disabled by default
 - Only caches string `GET` operations (hashes, lists, sets are not cached)
-- **Distributed invalidation** via PostgreSQL LISTEN/NOTIFY ensures cache consistency across pods
-- Writes (`SET`, `DEL`, etc.) broadcast invalidations to all instances immediately
+- **Distributed invalidation** via PostgreSQL LISTEN/NOTIFY provides better cache consistency across pods
+- Writes (`SET`, `DEL`, etc.) broadcast invalidations to all instances
 - Monitor cache effectiveness with `postkeys_cache_hits_total` and `postkeys_cache_misses_total` metrics
 
 **Multi-pod deployments:**
@@ -362,10 +367,11 @@ The following table lists the configurable parameters of the postkeys chart and 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `cache.enabled` | Enable in-memory cache (opt-in) | `false` |
-| `cache.ttl` | Cache TTL duration | `5s` |
+| `cache.ttl` | Cache TTL duration | `250ms` |
 | `cache.maxSize` | Maximum number of cached entries | `10000` |
+| `cache.distributedInvalidation` | Enable distributed cache invalidation via PostgreSQL LISTEN/NOTIFY | `false` |
 
-> **Note:** Cache invalidations are broadcast across all pods via PostgreSQL LISTEN/NOTIFY, ensuring cache coherency in multi-pod deployments.
+> **Note:** When `cache.distributedInvalidation` is enabled, cache invalidations are broadcast across all pods via PostgreSQL LISTEN/NOTIFY, ensuring cache coherency in multi-pod deployments. This adds ~0.3ms overhead per write operation. For single-pod deployments, leave disabled and use a short TTL.
 
 #### Debug Configuration
 
@@ -406,13 +412,55 @@ For deployment examples, including usage with CloudNativePG, see the [examples/]
 ## Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Redis Client  │────▶│   RESP Parser   │────▶│  Command Handler│
-└─────────────────┘     └─────────────────┘     └────────┬────────┘
-                                                         │
-                                                         ▼
-                                                ┌─────────────────┐
-                                                │  PostgreSQL DB  │
-                                                └─────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                              postkeys Server                               │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
+│  │Redis Clients│───▶│ RESP Parser │───▶│   Handler   │───▶│  Storage    │  │
+│  │ (RESP2/3)   │    │             │    │             │    │  Backend    │  │
+│  └─────────────┘    └─────────────┘    └──────┬──────┘    └──────┬──────┘  │
+│                                               │                  │         │
+│                           ┌───────────────────┼──────────────────┤         │
+│                           │                   │                  │         │
+│                           ▼                   ▼                  ▼         │
+│                    ┌─────────────┐     ┌─────────────┐     ┌───────────┐   │
+│                    │  Pub/Sub    │     │    Cache    │     │    Lua    │   │
+│                    │    Hub      │     │   (opt-in)  │     │  Scripts  │   │
+│                    └──────┬──────┘     └──────┬──────┘     └───────────┘   │
+│                           │                   │                            │
+│                           │     ┌─────────────┤                            │
+│                           │     │             │                            │
+│                           ▼     ▼             ▼                            │
+│                    ┌─────────────────────────────────────┐                 │
+│                    │       PostgreSQL LISTEN/NOTIFY      │                 │
+│                    │  (pub/sub, cache invalidation,      │                 │
+│                    │   BRPOP/BLPOP notifications)        │                 │
+│                    └──────────────────┬──────────────────┘                 │
+│                                       │                                    │
+└───────────────────────────────────────┼────────────────────────────────────┘
+                                        │
+                                        ▼
+                               ┌─────────────────┐
+                               │  PostgreSQL DB  │
+                               │                 │
+                               │  ┌───────────┐  │
+                               │  │ kv_strings│  │
+                               │  │ kv_hashes │  │
+                               │  │ kv_lists  │  │
+                               │  │ kv_sets   │  │
+                               │  │ kv_zsets  │  │
+                               │  │ kv_hll    │  │
+                               │  └───────────┘  │
+                               └─────────────────┘
 ```
+
+**Key Components:**
+
+- **RESP Parser**: Handles Redis protocol (RESP2 and RESP3) encoding/decoding
+- **Handler**: Routes commands to appropriate storage operations, manages transactions
+- **Storage Backend**: PostgreSQL-backed storage with optional in-memory cache layer
+- **Pub/Sub Hub**: Implements Redis pub/sub using PostgreSQL LISTEN/NOTIFY
+- **Cache**: Optional in-memory cache with distributed invalidation for multi-pod deployments
+- **Lua Scripts**: EVAL/EVALSHA scripting engine with script caching
 
