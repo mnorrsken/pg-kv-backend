@@ -54,15 +54,18 @@ func main() {
 		})
 		backend = cachedStore
 
-		// Set up distributed cache invalidation
-		cacheInvalidator = cache.NewInvalidator(store.Pool(), store.ConnString(), cachedStore.GetCache())
-		cacheInvalidator.SetDebug(cfg.Debug)
-		if err := cacheInvalidator.Start(ctx); err != nil {
-			log.Fatalf("Failed to start cache invalidator: %v", err)
+		// Set up distributed cache invalidation (optional, for multi-pod deployments)
+		if cfg.CacheDistributedInvalidation {
+			cacheInvalidator = cache.NewInvalidator(store.Pool(), store.ConnString(), cachedStore.GetCache())
+			cacheInvalidator.SetDebug(cfg.Debug)
+			if err := cacheInvalidator.Start(ctx); err != nil {
+				log.Fatalf("Failed to start cache invalidator: %v", err)
+			}
+			cachedStore.SetInvalidator(cacheInvalidator)
+			log.Printf("In-memory cache enabled with distributed invalidation (TTL: %v, MaxSize: %d)", cfg.CacheTTL, cfg.CacheMaxSize)
+		} else {
+			log.Printf("In-memory cache enabled (TTL: %v, MaxSize: %d)", cfg.CacheTTL, cfg.CacheMaxSize)
 		}
-		cachedStore.SetInvalidator(cacheInvalidator)
-
-		log.Printf("In-memory cache enabled with distributed invalidation (TTL: %v, MaxSize: %d)", cfg.CacheTTL, cfg.CacheMaxSize)
 	}
 
 	// Start metrics server

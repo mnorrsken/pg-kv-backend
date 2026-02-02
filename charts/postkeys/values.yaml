@@ -198,10 +198,15 @@ metrics:
 # Cache configuration (for string GET operations)
 cache:
   # Enable in-memory cache (opt-in, disabled by default)
-  # Cache invalidation is broadcast across all pods via PostgreSQL LISTEN/NOTIFY
   enabled: false
   # Cache TTL - how long to cache values (e.g., "100ms", "1s", "5s")
   # With distributed invalidation, longer TTLs are safe and improve performance
-  ttl: "5s"
+  # Without distributed invalidation, use shorter TTLs (100-500ms) to limit stale reads
+  ttl: "250ms"
   # Maximum number of cached entries (0 = unlimited)
   maxSize: 10000
+  # Enable distributed cache invalidation via PostgreSQL LISTEN/NOTIFY
+  # Required for cache coherency in multi-pod deployments
+  # Adds ~0.3ms overhead per write operation
+  # For single-pod deployments, leave disabled and use short TTL
+  distributedInvalidation: false

@@ -27,9 +27,10 @@ type Config struct {
 	PGSSLMode  string
 
 	// Cache configuration
-	CacheEnabled bool
-	CacheTTL     time.Duration
-	CacheMaxSize int
+	CacheEnabled                  bool
+	CacheTTL                      time.Duration
+	CacheMaxSize                  int
+	CacheDistributedInvalidation  bool
 
 	// Debug mode
 	Debug bool
@@ -55,10 +56,11 @@ func Load() *Config {
 		PGPassword:    getEnv("PG_PASSWORD", "postgres"),
 		PGDatabase:    getEnv("PG_DATABASE", "postkeys"),
 		PGSSLMode:     getEnv("PG_SSLMODE", "disable"),
-		CacheEnabled:  getEnvBool("CACHE_ENABLED", false),
-		CacheTTL:      getEnvDuration("CACHE_TTL", 250*time.Millisecond),
-		CacheMaxSize:  getEnvInt("CACHE_MAX_SIZE", 10000),
-		Debug:         getEnv("DEBUG", "") == "1",
+		CacheEnabled:                 getEnvBool("CACHE_ENABLED", false),
+		CacheTTL:                     getEnvDuration("CACHE_TTL", 250*time.Millisecond),
+		CacheMaxSize:                 getEnvInt("CACHE_MAX_SIZE", 10000),
+		CacheDistributedInvalidation: getEnvBool("CACHE_DISTRIBUTED_INVALIDATION", false),
+		Debug:                        getEnv("DEBUG", "") == "1",
 		SQLTraceLevel: getEnvInt("SQLTRACE", 0),
 		TraceLevel:    getEnvInt("TRACE", 0),
 	}

@@ -120,6 +120,10 @@ spec:
               value: {{ .Values.cache.ttl | quote }}
             - name: CACHE_MAX_SIZE
               value: {{ .Values.cache.maxSize | quote }}
+            {{- if .Values.cache.distributedInvalidation }}
+            - name: CACHE_DISTRIBUTED_INVALIDATION
+              value: "true"
+            {{- end }}
             {{- end }}
             {{- if .Values.debug }}
             - name: DEBUG

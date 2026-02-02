@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16] - 2026-02-02
+
+### Changed
+- **Cache distributed invalidation is now optional** (off by default)
+  - New env var: `CACHE_DISTRIBUTED_INVALIDATION=true` enables NOTIFY-based invalidation
+  - Default: pure TTL cache (no NOTIFY overhead, ~15-25% faster writes)
+  - Recommended: Enable for multi-pod deployments requiring cache coherency
+  - Helm: `cache.distributedInvalidation: true` to enable
+  - Default cache TTL changed from 5s to 250ms (appropriate for non-distributed mode)
+
 ## [0.15] - 2026-02-02
 
 ### Changed
