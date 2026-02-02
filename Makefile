@@ -1,12 +1,8 @@
-.PHONY: build test test-postgres bench bench-postgres bench-compare docker-up docker-down test-up test-down clean
+.PHONY: build test bench docker-up docker-down test-up test-down clean
 
 # Build
 build:
 	go build -o bin/postkeys ./cmd/server
-
-# Run unit tests (mock storage)
-test:
-	go test -v ./tests/... ./internal/...
 
 # Start test PostgreSQL container
 test-up:
@@ -22,25 +18,14 @@ test-up:
 test-down:
 	docker compose -f docker-compose.test.yml down -v
 
-# Run tests against PostgreSQL
-test-postgres: test-up
+# Run integration tests against PostgreSQL
+test: test-up
 	go test -v -tags=postgres ./tests/...
-
-# Run benchmarks (mock storage only)
-bench:
-	go test -bench=. -benchmem ./tests/...
+	go test -v ./internal/...
 
 # Run benchmarks against PostgreSQL
-bench-postgres: test-up
-	go test -bench=BenchmarkPg -benchmem -tags=postgres ./tests/...
-
-# Run comparison benchmarks (Mock vs PostgreSQL)
-bench-compare: test-up
-	@echo "=== Mock Storage Benchmarks ==="
-	go test -bench='BenchmarkMock|BenchmarkSetGet' -benchmem -tags=postgres ./tests/... 2>/dev/null | grep -E '(Benchmark|ns/op)'
-	@echo ""
-	@echo "=== PostgreSQL Storage Benchmarks ==="
-	go test -bench=BenchmarkPg -benchmem -tags=postgres ./tests/... 2>/dev/null | grep -E '(Benchmark|ns/op)'
+bench: test-up
+	go test -bench=. -benchmem -tags=postgres ./tests/...
 
 # Start production containers
 docker-up:
