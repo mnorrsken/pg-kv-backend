@@ -1,8 +1,37 @@
-.PHONY: build test bench docker-up docker-down test-up test-down clean
+.PHONY: build test bench docker-up docker-down test-up test-down clean docker-build deploy
+
+# Load local dev settings if present
+-include .dev.env
+export
+
+# Default values (can be overridden in .dev.env)
+DEV_REPO ?= ghcr.io/mnorrsken
+DEV_NAMESPACE ?= postkeys-dev
 
 # Build
 build:
 	go build -o bin/postkeys ./cmd/server
+
+# Build Docker image for development
+docker-build:
+	docker build -t $(DEV_REPO)/postkeys:dev .
+
+# Push Docker image
+docker-push: docker-build
+	docker push $(DEV_REPO)/postkeys:dev
+
+# Create namespace if missing and deploy example to Kubernetes
+deploy:
+	@kubectl get namespace $(DEV_NAMESPACE) > /dev/null 2>&1 || kubectl create namespace $(DEV_NAMESPACE)
+	@echo "Deploying to namespace: $(DEV_NAMESPACE)"
+	kubectl apply -k dev/simple -n $(DEV_NAMESPACE)
+	helm upgrade --install postkeys ./charts/postkeys --namespace $(DEV_NAMESPACE) -f dev/simple/values.yaml --set image.repository=$(DEV_REPO)/postkeys --set image.tag=dev --set image.pullPolicy=Always
+
+# Delete deployment
+undeploy:
+	@echo "Deleting deployment from namespace: $(DEV_NAMESPACE)"
+	helm uninstall postkeys -n $(DEV_NAMESPACE) --ignore-not-found
+	kubectl delete -k dev/simple -n $(DEV_NAMESPACE) --ignore-not-found
 
 # Start test PostgreSQL container
 test-up:

@@ -1,0 +1,14 @@
+replicaCount: 1
+
+redis:
+  password:
+    value: "demo-password"
+
+postgresql:
+  existingSecret:
+    name: postkeys-db-app
+    usernameKey: username
+    passwordKey: password
+    portKey: port
+    hostKey: host
+    databaseKey: dbname

@@ -24,3 +24,4 @@ coverage.out
 # Environment
 .env
 .env.local
+.dev.env
