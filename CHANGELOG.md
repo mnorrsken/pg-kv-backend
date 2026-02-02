@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17] - 2026-02-02
+
+### Added
+- **Redis 7 benchmark suite**: New `make bench-redis` and `make bench-compare` targets for comparing PostgreSQL vs Redis performance
+
+### Changed
+- **Batch write optimizations**: Major performance improvements for bulk operations
+  - MSET: ~7x faster (uses UNNEST-based batch insert instead of per-key queries)
+  - HSET: Batch insert for multiple fields
+  - SADD: Batch insert for multiple members using CTE
+  - LPUSH/RPUSH: Batch insert for multiple values
+  - New `deleteKeysFromAllTables` for batch key deletion
+
 ## [0.16] - 2026-02-02
 
 ### Changed

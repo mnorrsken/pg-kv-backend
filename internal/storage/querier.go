@@ -102,6 +102,20 @@ func (queryOps) setMeta(ctx context.Context, q Querier, key string, keyType KeyT
 	return err
 }
 
+// setMetaBatch sets metadata for multiple keys at once
+func (queryOps) setMetaBatch(ctx context.Context, q Querier, keys []string, keyType KeyType) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	_, err := q.Exec(ctx,
+		`INSERT INTO kv_meta (key, key_type)
+		 SELECT unnest($1::text[]), $2
+		 ON CONFLICT (key) DO UPDATE SET key_type = EXCLUDED.key_type`,
+		keys, string(keyType),
+	)
+	return err
+}
+
 func (queryOps) deleteKeyFromAllTables(ctx context.Context, q Querier, key string) error {
 	queries := []string{
 		"DELETE FROM kv_strings WHERE key = $1",
@@ -113,6 +127,27 @@ func (queryOps) deleteKeyFromAllTables(ctx context.Context, q Querier, key strin
 	}
 	for _, query := range queries {
 		if _, err := q.Exec(ctx, query, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteKeysFromAllTables deletes multiple keys from all tables in batch
+func (queryOps) deleteKeysFromAllTables(ctx context.Context, q Querier, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	queries := []string{
+		"DELETE FROM kv_strings WHERE key = ANY($1)",
+		"DELETE FROM kv_hashes WHERE key = ANY($1)",
+		"DELETE FROM kv_lists WHERE key = ANY($1)",
+		"DELETE FROM kv_sets WHERE key = ANY($1)",
+		"DELETE FROM kv_zsets WHERE key = ANY($1)",
+		"DELETE FROM kv_meta WHERE key = ANY($1)",
+	}
+	for _, query := range queries {
+		if _, err := q.Exec(ctx, query, keys); err != nil {
 			return err
 		}
 	}
@@ -216,25 +251,36 @@ func (o queryOps) mGet(ctx context.Context, q Querier, keys []string) ([]interfa
 }
 
 func (o queryOps) mSet(ctx context.Context, q Querier, pairs map[string]string) error {
-	for key, value := range pairs {
-		if err := o.deleteKeyFromAllTables(ctx, q, key); err != nil {
-			return err
-		}
-
-		_, err := q.Exec(ctx,
-			`INSERT INTO kv_strings (key, value) VALUES ($1, $2)
-			 ON CONFLICT (key) DO UPDATE SET value = $2`,
-			key, []byte(value),
-		)
-		if err != nil {
-			return err
-		}
-
-		if err := o.setMeta(ctx, q, key, TypeString, nil); err != nil {
-			return err
-		}
+	if len(pairs) == 0 {
+		return nil
 	}
-	return nil
+
+	// Collect all keys for batch operations
+	keys := make([]string, 0, len(pairs))
+	values := make([][]byte, 0, len(pairs))
+	for key, value := range pairs {
+		keys = append(keys, key)
+		values = append(values, []byte(value))
+	}
+
+	// Batch delete from all tables
+	if err := o.deleteKeysFromAllTables(ctx, q, keys); err != nil {
+		return err
+	}
+
+	// Batch insert using UNNEST
+	_, err := q.Exec(ctx,
+		`INSERT INTO kv_strings (key, value)
+		 SELECT unnest($1::text[]), unnest($2::bytea[])
+		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+		keys, values,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Batch set metadata
+	return o.setMetaBatch(ctx, q, keys, TypeString)
 }
 
 func (o queryOps) incr(ctx context.Context, q Querier, key string, delta int64) (int64, error) {
@@ -896,6 +942,10 @@ func (o queryOps) hGet(ctx context.Context, q Querier, key, field string) (strin
 }
 
 func (o queryOps) hSet(ctx context.Context, q Querier, key string, fields map[string]string) (int64, error) {
+	if len(fields) == 0 {
+		return 0, nil
+	}
+
 	// Check if key exists but is wrong type
 	keyType, err := o.getKeyType(ctx, q, key)
 	if err != nil {
@@ -905,28 +955,33 @@ func (o queryOps) hSet(ctx context.Context, q Querier, key string, fields map[st
 		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
-	var added int64
+	// Collect fields and values for batch insert
+	fieldNames := make([]string, 0, len(fields))
+	fieldValues := make([][]byte, 0, len(fields))
 	for field, value := range fields {
-		encField := encodeField(field)
-		result, err := q.Exec(ctx,
-			`INSERT INTO kv_hashes (key, field, value) VALUES ($1, $2, $3)
-			 ON CONFLICT (key, field) DO UPDATE SET value = $3`,
-			key, encField, []byte(value),
-		)
-		if err != nil {
-			return 0, err
-		}
-		// If it was an insert (not update), count it
-		if result.RowsAffected() > 0 {
-			// Check if this was a new field
-			var count int64
-			if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_hashes WHERE key = $1 AND field = $2", key, encField).Scan(&count); err != nil {
-				return 0, fmt.Errorf("failed to check field count: %w", err)
-			}
-			if count == 1 {
-				added++
-			}
-		}
+		fieldNames = append(fieldNames, encodeField(field))
+		fieldValues = append(fieldValues, []byte(value))
+	}
+
+	// Count existing fields before insert (to calculate newly added)
+	var existingCount int64
+	err = q.QueryRow(ctx,
+		"SELECT COUNT(*) FROM kv_hashes WHERE key = $1 AND field = ANY($2)",
+		key, fieldNames,
+	).Scan(&existingCount)
+	if err != nil {
+		return 0, err
+	}
+
+	// Batch upsert all fields at once
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_hashes (key, field, value)
+		 SELECT $1, unnest($2::text[]), unnest($3::bytea[])
+		 ON CONFLICT (key, field) DO UPDATE SET value = EXCLUDED.value`,
+		key, fieldNames, fieldValues,
+	)
+	if err != nil {
+		return 0, err
 	}
 
 	// Set metadata
@@ -934,7 +989,8 @@ func (o queryOps) hSet(ctx context.Context, q Querier, key string, fields map[st
 		return 0, err
 	}
 
-	return added, nil
+	// Return number of newly added fields
+	return int64(len(fields)) - existingCount, nil
 }
 
 func (o queryOps) hDel(ctx context.Context, q Querier, key string, fields []string) (int64, error) {
@@ -1234,6 +1290,15 @@ func (o queryOps) lPush(ctx context.Context, q Querier, key string, values []str
 		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
+	if len(values) == 0 {
+		// Just return current length
+		var length int64
+		if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length); err != nil {
+			return 0, fmt.Errorf("failed to get list length: %w", err)
+		}
+		return length, nil
+	}
+
 	// Use advisory lock to serialize list operations on this key
 	// hashtext returns int4, we need int8 for pg_advisory_xact_lock
 	_, err = q.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", key)
@@ -1247,15 +1312,23 @@ func (o queryOps) lPush(ctx context.Context, q Querier, key string, values []str
 		return 0, fmt.Errorf("failed to get min index: %w", err)
 	}
 
-	// Insert values at the beginning (in reverse order so first value ends up at head)
+	// Prepare indices and values for batch insert
+	// For LPUSH, first value ends up at head, so we insert in reverse order
+	indices := make([]int64, len(values))
+	valueBytes := make([][]byte, len(values))
 	for i, value := range values {
-		_, err := q.Exec(ctx,
-			"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
-			key, minIdx-int64(i+1), []byte(value),
-		)
-		if err != nil {
-			return 0, err
-		}
+		indices[i] = minIdx - int64(i+1)
+		valueBytes[i] = []byte(value)
+	}
+
+	// Batch insert all values at once
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_lists (key, idx, value)
+		 SELECT $1, unnest($2::bigint[]), unnest($3::bytea[])`,
+		key, indices, valueBytes,
+	)
+	if err != nil {
+		return 0, err
 	}
 
 	if err := o.setMeta(ctx, q, key, TypeList, nil); err != nil {
@@ -1283,6 +1356,15 @@ func (o queryOps) rPush(ctx context.Context, q Querier, key string, values []str
 		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
+	if len(values) == 0 {
+		// Just return current length
+		var length int64
+		if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length); err != nil {
+			return 0, fmt.Errorf("failed to get list length: %w", err)
+		}
+		return length, nil
+	}
+
 	// Use advisory lock to serialize list operations on this key
 	_, err = q.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", key)
 	if err != nil {
@@ -1295,15 +1377,22 @@ func (o queryOps) rPush(ctx context.Context, q Querier, key string, values []str
 		return 0, fmt.Errorf("failed to get max index: %w", err)
 	}
 
-	// Insert values at the end
+	// Prepare indices and values for batch insert
+	indices := make([]int64, len(values))
+	valueBytes := make([][]byte, len(values))
 	for i, value := range values {
-		_, err := q.Exec(ctx,
-			"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
-			key, maxIdx+int64(i+1), []byte(value),
-		)
-		if err != nil {
-			return 0, err
-		}
+		indices[i] = maxIdx + int64(i+1)
+		valueBytes[i] = []byte(value)
+	}
+
+	// Batch insert all values at once
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_lists (key, idx, value)
+		 SELECT $1, unnest($2::bigint[]), unnest($3::bytea[])`,
+		key, indices, valueBytes,
+	)
+	if err != nil {
+		return 0, err
 	}
 
 	if err := o.setMeta(ctx, q, key, TypeList, nil); err != nil {
@@ -1478,6 +1567,10 @@ func (o queryOps) lIndex(ctx context.Context, q Querier, key string, index int64
 // ============== Set Commands ==============
 
 func (o queryOps) sAdd(ctx context.Context, q Querier, key string, members []string) (int64, error) {
+	if len(members) == 0 {
+		return 0, nil
+	}
+
 	keyType, err := o.getKeyType(ctx, q, key)
 	if err != nil {
 		return 0, err
@@ -1486,17 +1579,26 @@ func (o queryOps) sAdd(ctx context.Context, q Querier, key string, members []str
 		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
+	// Convert members to bytes for batch insert
+	memberBytes := make([][]byte, len(members))
+	for i, m := range members {
+		memberBytes[i] = []byte(m)
+	}
+
+	// Batch insert with ON CONFLICT DO NOTHING, returning count of inserted rows
 	var added int64
-	for _, member := range members {
-		result, err := q.Exec(ctx,
-			`INSERT INTO kv_sets (key, member) VALUES ($1, $2)
-			 ON CONFLICT (key, member) DO NOTHING`,
-			key, []byte(member),
+	err = q.QueryRow(ctx,
+		`WITH inserted AS (
+			INSERT INTO kv_sets (key, member)
+			SELECT $1, unnest($2::bytea[])
+			ON CONFLICT (key, member) DO NOTHING
+			RETURNING 1
 		)
-		if err != nil {
-			return 0, err
-		}
-		added += result.RowsAffected()
+		SELECT COUNT(*) FROM inserted`,
+		key, memberBytes,
+	).Scan(&added)
+	if err != nil {
+		return 0, err
 	}
 
 	if err := o.setMeta(ctx, q, key, TypeSet, nil); err != nil {

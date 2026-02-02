@@ -42,6 +42,11 @@ test-up:
 		sleep 1; \
 	done
 	@echo "PostgreSQL is ready!"
+	@echo "Waiting for Redis to be ready..."
+	@until docker compose -f docker-compose.test.yml exec -T redis redis-cli ping > /dev/null 2>&1; do \
+		sleep 1; \
+	done
+	@echo "Redis is ready!"
 
 # Stop test PostgreSQL container
 test-down:
@@ -55,6 +60,18 @@ test: test-up
 # Run benchmarks against PostgreSQL
 bench: test-up
 	go test -bench=. -benchmem -tags=postgres ./tests/...
+
+# Run benchmarks against Redis 7
+bench-redis: test-up
+	go test -bench=. -benchmem -tags=redis ./tests/...
+
+# Run benchmarks comparing PostgreSQL vs Redis
+bench-compare: test-up
+	@echo "=== PostgreSQL Benchmarks ==="
+	go test -bench=. -benchmem -tags=postgres ./tests/... 2>&1 | tee /tmp/bench-pg.txt
+	@echo ""
+	@echo "=== Redis 7 Benchmarks ==="
+	go test -bench=. -benchmem -tags=redis ./tests/... 2>&1 | tee /tmp/bench-redis.txt
 
 # Start production containers
 docker-up:
