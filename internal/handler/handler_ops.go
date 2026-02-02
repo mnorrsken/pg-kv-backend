@@ -695,6 +695,77 @@ func (h *Handler) pexpireOp(ctx context.Context, ops storage.Operations, args []
 	return resp.Int(0)
 }
 
+func (h *Handler) expireatOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 2 {
+		return resp.ErrWrongArgs("expireat")
+	}
+
+	timestamp, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+
+	expireTime := time.Unix(timestamp, 0)
+	ok, err := ops.ExpireAt(ctx, args[0].Bulk, expireTime)
+	if err != nil {
+		return resp.Err(err.Error())
+	}
+	if ok {
+		return resp.Int(1)
+	}
+	return resp.Int(0)
+}
+
+func (h *Handler) pexpireatOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 2 {
+		return resp.ErrWrongArgs("pexpireat")
+	}
+
+	timestamp, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+
+	// Convert milliseconds to time
+	expireTime := time.Unix(timestamp/1000, (timestamp%1000)*1000000)
+	ok, err := ops.ExpireAt(ctx, args[0].Bulk, expireTime)
+	if err != nil {
+		return resp.Err(err.Error())
+	}
+	if ok {
+		return resp.Int(1)
+	}
+	return resp.Int(0)
+}
+
+func (h *Handler) copyOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("copy")
+	}
+
+	source := args[0].Bulk
+	destination := args[1].Bulk
+	replace := false
+
+	// Parse optional arguments
+	for i := 2; i < len(args); i++ {
+		opt := strings.ToUpper(args[i].Bulk)
+		if opt == "REPLACE" {
+			replace = true
+		}
+		// DB option is ignored (single DB)
+	}
+
+	ok, err := ops.Copy(ctx, source, destination, replace)
+	if err != nil {
+		return resp.Err(err.Error())
+	}
+	if ok {
+		return resp.Int(1)
+	}
+	return resp.Int(0)
+}
+
 func (h *Handler) ttlOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
 	if len(args) != 1 {
 		return resp.ErrWrongArgs("ttl")
@@ -983,6 +1054,46 @@ func (h *Handler) hincrbyOp(ctx context.Context, ops storage.Operations, args []
 		return resp.Err(err.Error())
 	}
 	return resp.Int(result)
+}
+
+func (h *Handler) hincrbyfloatOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("hincrbyfloat")
+	}
+
+	key := args[0].Bulk
+	field := args[1].Bulk
+	increment, err := strconv.ParseFloat(args[2].Bulk, 64)
+	if err != nil {
+		return resp.Err("ERR value is not a valid float")
+	}
+
+	result, err := ops.HIncrByFloat(ctx, key, field, increment)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Bulk(strconv.FormatFloat(result, 'f', -1, 64))
+}
+
+func (h *Handler) hsetnxOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("hsetnx")
+	}
+
+	set, err := ops.HSetNX(ctx, args[0].Bulk, args[1].Bulk, args[2].Bulk)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	if set {
+		return resp.Int(1)
+	}
+	return resp.Int(0)
 }
 
 func (h *Handler) hscanOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
@@ -2074,6 +2185,327 @@ func (h *Handler) zpopminOp(ctx context.Context, ops storage.Operations, args []
 	return resp.Arr(result...)
 }
 
+func (h *Handler) zpopmaxOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("zpopmax")
+	}
+
+	key := args[0].Bulk
+	count := int64(1)
+
+	if len(args) > 1 {
+		var err error
+		count, err = strconv.ParseInt(args[1].Bulk, 10, 64)
+		if err != nil || count < 0 {
+			return resp.Err("ERR value is not an integer or out of range")
+		}
+	}
+
+	members, err := ops.ZPopMax(ctx, key, count)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	if len(members) == 0 {
+		return resp.Arr()
+	}
+
+	result := make([]resp.Value, 0, len(members)*2)
+	for _, m := range members {
+		result = append(result, resp.Bulk(m.Member))
+		result = append(result, resp.Bulk(strconv.FormatFloat(m.Score, 'f', -1, 64)))
+	}
+	return resp.Arr(result...)
+}
+
+func (h *Handler) zrankOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("zrank")
+	}
+
+	key := args[0].Bulk
+	member := args[1].Bulk
+
+	rank, found, err := ops.ZRank(ctx, key, member)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	if !found {
+		return resp.NullBulk()
+	}
+	return resp.Int(rank)
+}
+
+func (h *Handler) zrevrankOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("zrevrank")
+	}
+
+	key := args[0].Bulk
+	member := args[1].Bulk
+
+	rank, found, err := ops.ZRevRank(ctx, key, member)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	if !found {
+		return resp.NullBulk()
+	}
+	return resp.Int(rank)
+}
+
+func (h *Handler) zcountOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("zcount")
+	}
+
+	key := args[0].Bulk
+	minStr := args[1].Bulk
+	maxStr := args[2].Bulk
+
+	// Parse min score
+	var min float64
+	if minStr == "-inf" {
+		min = -1e308
+	} else if minStr == "+inf" || minStr == "inf" {
+		min = 1e308
+	} else {
+		exclusive := strings.HasPrefix(minStr, "(")
+		if exclusive {
+			minStr = minStr[1:]
+		}
+		var err error
+		min, err = strconv.ParseFloat(minStr, 64)
+		if err != nil {
+			return resp.Err("ERR min value is not a float")
+		}
+		if exclusive {
+			min += 1e-9 // Approximate exclusivity
+		}
+	}
+
+	// Parse max score
+	var max float64
+	if maxStr == "+inf" || maxStr == "inf" {
+		max = 1e308
+	} else if maxStr == "-inf" {
+		max = -1e308
+	} else {
+		exclusive := strings.HasPrefix(maxStr, "(")
+		if exclusive {
+			maxStr = maxStr[1:]
+		}
+		var err error
+		max, err = strconv.ParseFloat(maxStr, 64)
+		if err != nil {
+			return resp.Err("ERR max value is not a float")
+		}
+		if exclusive {
+			max -= 1e-9 // Approximate exclusivity
+		}
+	}
+
+	count, err := ops.ZCount(ctx, key, min, max)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(count)
+}
+
+func (h *Handler) zscanOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("zscan")
+	}
+
+	key := args[0].Bulk
+	cursor, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+
+	pattern := "*"
+	count := int64(10)
+
+	for i := 2; i < len(args); i++ {
+		opt := strings.ToUpper(args[i].Bulk)
+		switch opt {
+		case "MATCH":
+			if i+1 >= len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			i++
+			pattern = args[i].Bulk
+		case "COUNT":
+			if i+1 >= len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			i++
+			count, err = strconv.ParseInt(args[i].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+		}
+	}
+
+	nextCursor, members, err := ops.ZScan(ctx, key, cursor, pattern, count)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	// Build result array with member/score pairs
+	items := make([]resp.Value, 0, len(members)*2)
+	for _, m := range members {
+		items = append(items, resp.Bulk(m.Member))
+		items = append(items, resp.Bulk(strconv.FormatFloat(m.Score, 'f', -1, 64)))
+	}
+
+	return resp.Arr(
+		resp.Bulk(strconv.FormatInt(nextCursor, 10)),
+		resp.Arr(items...),
+	)
+}
+
+func (h *Handler) zunionstoreOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 3 {
+		return resp.ErrWrongArgs("zunionstore")
+	}
+
+	destination := args[0].Bulk
+	numKeys, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil || numKeys <= 0 {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+
+	if len(args) < int(numKeys)+2 {
+		return resp.ErrWrongArgs("zunionstore")
+	}
+
+	keys := make([]string, numKeys)
+	for i := int64(0); i < numKeys; i++ {
+		keys[i] = args[2+i].Bulk
+	}
+
+	// Parse optional WEIGHTS and AGGREGATE
+	var weights []float64
+	aggregate := "SUM"
+	idx := int(numKeys) + 2
+
+	for idx < len(args) {
+		opt := strings.ToUpper(args[idx].Bulk)
+		switch opt {
+		case "WEIGHTS":
+			idx++
+			weights = make([]float64, numKeys)
+			for i := int64(0); i < numKeys && idx < len(args); i++ {
+				w, err := strconv.ParseFloat(args[idx].Bulk, 64)
+				if err != nil {
+					return resp.Err("ERR weight value is not a float")
+				}
+				weights[i] = w
+				idx++
+			}
+		case "AGGREGATE":
+			idx++
+			if idx < len(args) {
+				aggregate = strings.ToUpper(args[idx].Bulk)
+				if aggregate != "SUM" && aggregate != "MIN" && aggregate != "MAX" {
+					return resp.Err("ERR syntax error")
+				}
+				idx++
+			}
+		default:
+			idx++
+		}
+	}
+
+	count, err := ops.ZUnionStore(ctx, destination, keys, weights, aggregate)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(count)
+}
+
+func (h *Handler) zinterstoreOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 3 {
+		return resp.ErrWrongArgs("zinterstore")
+	}
+
+	destination := args[0].Bulk
+	numKeys, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil || numKeys <= 0 {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+
+	if len(args) < int(numKeys)+2 {
+		return resp.ErrWrongArgs("zinterstore")
+	}
+
+	keys := make([]string, numKeys)
+	for i := int64(0); i < numKeys; i++ {
+		keys[i] = args[2+i].Bulk
+	}
+
+	// Parse optional WEIGHTS and AGGREGATE
+	var weights []float64
+	aggregate := "SUM"
+	idx := int(numKeys) + 2
+
+	for idx < len(args) {
+		opt := strings.ToUpper(args[idx].Bulk)
+		switch opt {
+		case "WEIGHTS":
+			idx++
+			weights = make([]float64, numKeys)
+			for i := int64(0); i < numKeys && idx < len(args); i++ {
+				w, err := strconv.ParseFloat(args[idx].Bulk, 64)
+				if err != nil {
+					return resp.Err("ERR weight value is not a float")
+				}
+				weights[i] = w
+				idx++
+			}
+		case "AGGREGATE":
+			idx++
+			if idx < len(args) {
+				aggregate = strings.ToUpper(args[idx].Bulk)
+				if aggregate != "SUM" && aggregate != "MIN" && aggregate != "MAX" {
+					return resp.Err("ERR syntax error")
+				}
+				idx++
+			}
+		default:
+			idx++
+		}
+	}
+
+	count, err := ops.ZInterStore(ctx, destination, keys, weights, aggregate)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(count)
+}
+
 func (h *Handler) lremOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
 	if len(args) != 3 {
 		return resp.ErrWrongArgs("lrem")
@@ -2140,6 +2572,294 @@ func (h *Handler) rpoplpushOp(ctx context.Context, ops storage.Operations, args 
 		return resp.NullBulk()
 	}
 	return resp.Bulk(value)
+}
+
+func (h *Handler) lposOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("lpos")
+	}
+
+	key := args[0].Bulk
+	element := args[1].Bulk
+	var rank, count, maxlen int64 = 1, 1, 0
+
+	// Parse options
+	for i := 2; i < len(args); i++ {
+		opt := strings.ToUpper(args[i].Bulk)
+		switch opt {
+		case "RANK":
+			if i+1 >= len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			i++
+			var err error
+			rank, err = strconv.ParseInt(args[i].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+		case "COUNT":
+			if i+1 >= len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			i++
+			var err error
+			count, err = strconv.ParseInt(args[i].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+		case "MAXLEN":
+			if i+1 >= len(args) {
+				return resp.Err("ERR syntax error")
+			}
+			i++
+			var err error
+			maxlen, err = strconv.ParseInt(args[i].Bulk, 10, 64)
+			if err != nil {
+				return resp.Err("ERR value is not an integer or out of range")
+			}
+		}
+	}
+
+	positions, err := ops.LPos(ctx, key, element, rank, count, maxlen)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	if len(positions) == 0 {
+		return resp.NullBulk()
+	}
+	if count == 1 {
+		return resp.Int(positions[0])
+	}
+
+	result := make([]resp.Value, len(positions))
+	for i, pos := range positions {
+		result[i] = resp.Int(pos)
+	}
+	return resp.Arr(result...)
+}
+
+func (h *Handler) lsetOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("lset")
+	}
+
+	index, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil {
+		return resp.Err("ERR value is not an integer or out of range")
+	}
+
+	err = ops.LSet(ctx, args[0].Bulk, index, args[2].Bulk)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.OK()
+}
+
+func (h *Handler) linsertOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 4 {
+		return resp.ErrWrongArgs("linsert")
+	}
+
+	key := args[0].Bulk
+	position := strings.ToUpper(args[1].Bulk)
+	pivot := args[2].Bulk
+	element := args[3].Bulk
+
+	var before bool
+	switch position {
+	case "BEFORE":
+		before = true
+	case "AFTER":
+		before = false
+	default:
+		return resp.Err("ERR syntax error")
+	}
+
+	length, err := ops.LInsert(ctx, key, pivot, element, before)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(length)
+}
+
+// ============== Set Extensions ==============
+
+func (h *Handler) smismemberOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("smismember")
+	}
+
+	key := args[0].Bulk
+	members := make([]string, len(args)-1)
+	for i := 1; i < len(args); i++ {
+		members[i-1] = args[i].Bulk
+	}
+
+	results, err := ops.SMIsMember(ctx, key, members)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	respResults := make([]resp.Value, len(results))
+	for i, exists := range results {
+		if exists {
+			respResults[i] = resp.Int(1)
+		} else {
+			respResults[i] = resp.Int(0)
+		}
+	}
+	return resp.Arr(respResults...)
+}
+
+func (h *Handler) sinterOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("sinter")
+	}
+
+	keys := make([]string, len(args))
+	for i, arg := range args {
+		keys[i] = arg.Bulk
+	}
+
+	members, err := ops.SInter(ctx, keys)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	result := make([]resp.Value, len(members))
+	for i, m := range members {
+		result[i] = resp.Bulk(m)
+	}
+	return resp.Arr(result...)
+}
+
+func (h *Handler) sinterstoreOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("sinterstore")
+	}
+
+	destination := args[0].Bulk
+	keys := make([]string, len(args)-1)
+	for i := 1; i < len(args); i++ {
+		keys[i-1] = args[i].Bulk
+	}
+
+	count, err := ops.SInterStore(ctx, destination, keys)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(count)
+}
+
+func (h *Handler) sunionOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("sunion")
+	}
+
+	keys := make([]string, len(args))
+	for i, arg := range args {
+		keys[i] = arg.Bulk
+	}
+
+	members, err := ops.SUnion(ctx, keys)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	result := make([]resp.Value, len(members))
+	for i, m := range members {
+		result[i] = resp.Bulk(m)
+	}
+	return resp.Arr(result...)
+}
+
+func (h *Handler) sunionstoreOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("sunionstore")
+	}
+
+	destination := args[0].Bulk
+	keys := make([]string, len(args)-1)
+	for i := 1; i < len(args); i++ {
+		keys[i-1] = args[i].Bulk
+	}
+
+	count, err := ops.SUnionStore(ctx, destination, keys)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(count)
+}
+
+func (h *Handler) sdiffOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("sdiff")
+	}
+
+	keys := make([]string, len(args))
+	for i, arg := range args {
+		keys[i] = arg.Bulk
+	}
+
+	members, err := ops.SDiff(ctx, keys)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+
+	result := make([]resp.Value, len(members))
+	for i, m := range members {
+		result[i] = resp.Bulk(m)
+	}
+	return resp.Arr(result...)
+}
+
+func (h *Handler) sdiffstoreOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("sdiffstore")
+	}
+
+	destination := args[0].Bulk
+	keys := make([]string, len(args)-1)
+	for i := 1; i < len(args); i++ {
+		keys[i-1] = args[i].Bulk
+	}
+
+	count, err := ops.SDiffStore(ctx, destination, keys)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(count)
 }
 
 func (h *Handler) sscanOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
@@ -2293,6 +3013,170 @@ func (h *Handler) pfmergeOp(ctx context.Context, ops storage.Operations, args []
 	return resp.OK()
 }
 
+// ============== Bitmap Commands ==============
+
+func (h *Handler) setbitOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 3 {
+		return resp.ErrWrongArgs("setbit")
+	}
+
+	key := args[0].Bulk
+	offset, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil || offset < 0 {
+		return resp.Err("ERR bit offset is not an integer or out of range")
+	}
+
+	value, err := strconv.ParseInt(args[2].Bulk, 10, 64)
+	if err != nil || (value != 0 && value != 1) {
+		return resp.Err("ERR bit is not an integer or out of range")
+	}
+
+	oldBit, err := ops.SetBit(ctx, key, offset, int(value))
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(oldBit)
+}
+
+func (h *Handler) getbitOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) != 2 {
+		return resp.ErrWrongArgs("getbit")
+	}
+
+	key := args[0].Bulk
+	offset, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil || offset < 0 {
+		return resp.Err("ERR bit offset is not an integer or out of range")
+	}
+
+	bit, err := ops.GetBit(ctx, key, offset)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(bit)
+}
+
+func (h *Handler) bitcountOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 1 {
+		return resp.ErrWrongArgs("bitcount")
+	}
+
+	key := args[0].Bulk
+	var start, end int64 = 0, -1
+	useBit := false
+
+	if len(args) >= 3 {
+		var err error
+		start, err = strconv.ParseInt(args[1].Bulk, 10, 64)
+		if err != nil {
+			return resp.Err("ERR value is not an integer or out of range")
+		}
+		end, err = strconv.ParseInt(args[2].Bulk, 10, 64)
+		if err != nil {
+			return resp.Err("ERR value is not an integer or out of range")
+		}
+	}
+
+	if len(args) >= 4 {
+		unit := strings.ToUpper(args[3].Bulk)
+		if unit != "BYTE" && unit != "BIT" {
+			return resp.Err("ERR syntax error")
+		}
+		useBit = unit == "BIT"
+	}
+
+	count, err := ops.BitCount(ctx, key, start, end, useBit)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(count)
+}
+
+func (h *Handler) bitopOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 3 {
+		return resp.ErrWrongArgs("bitop")
+	}
+
+	operation := strings.ToUpper(args[0].Bulk)
+	destKey := args[1].Bulk
+	keys := make([]string, len(args)-2)
+	for i := 2; i < len(args); i++ {
+		keys[i-2] = args[i].Bulk
+	}
+
+	if operation != "AND" && operation != "OR" && operation != "XOR" && operation != "NOT" {
+		return resp.Err("ERR syntax error")
+	}
+
+	if operation == "NOT" && len(keys) != 1 {
+		return resp.Err("ERR BITOP NOT requires one and only one key")
+	}
+
+	length, err := ops.BitOp(ctx, operation, destKey, keys)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(length)
+}
+
+func (h *Handler) bitposOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
+	if len(args) < 2 {
+		return resp.ErrWrongArgs("bitpos")
+	}
+
+	key := args[0].Bulk
+	bit, err := strconv.ParseInt(args[1].Bulk, 10, 64)
+	if err != nil || (bit != 0 && bit != 1) {
+		return resp.Err("ERR bit is not an integer or out of range")
+	}
+
+	var start, end int64 = 0, -1
+	useBit := false
+
+	if len(args) >= 3 {
+		start, err = strconv.ParseInt(args[2].Bulk, 10, 64)
+		if err != nil {
+			return resp.Err("ERR value is not an integer or out of range")
+		}
+	}
+
+	if len(args) >= 4 {
+		end, err = strconv.ParseInt(args[3].Bulk, 10, 64)
+		if err != nil {
+			return resp.Err("ERR value is not an integer or out of range")
+		}
+	}
+
+	if len(args) >= 5 {
+		unit := strings.ToUpper(args[4].Bulk)
+		if unit != "BYTE" && unit != "BIT" {
+			return resp.Err("ERR syntax error")
+		}
+		useBit = unit == "BIT"
+	}
+
+	pos, err := ops.BitPos(ctx, key, int(bit), start, end, useBit)
+	if err != nil {
+		if strings.Contains(err.Error(), "WRONGTYPE") {
+			return resp.ErrWrongType()
+		}
+		return resp.Err(err.Error())
+	}
+	return resp.Int(pos)
+}
+
 // ============== Server Commands ==============
 
 func (h *Handler) infoOp(ctx context.Context, ops storage.Operations, args []resp.Value) resp.Value {
@@ -2376,6 +3260,10 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.expireOp(ctx, ops, args)
 	case "PEXPIRE":
 		return h.pexpireOp(ctx, ops, args)
+	case "EXPIREAT":
+		return h.expireatOp(ctx, ops, args)
+	case "PEXPIREAT":
+		return h.pexpireatOp(ctx, ops, args)
 	case "TTL":
 		return h.ttlOp(ctx, ops, args)
 	case "PTTL":
@@ -2388,6 +3276,8 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.typeCmdOp(ctx, ops, args)
 	case "RENAME":
 		return h.renameOp(ctx, ops, args)
+	case "COPY":
+		return h.copyOp(ctx, ops, args)
 
 	// Hash commands
 	case "HGET":
@@ -2412,6 +3302,10 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.hlenOp(ctx, ops, args)
 	case "HINCRBY":
 		return h.hincrbyOp(ctx, ops, args)
+	case "HINCRBYFLOAT":
+		return h.hincrbyfloatOp(ctx, ops, args)
+	case "HSETNX":
+		return h.hsetnxOp(ctx, ops, args)
 	case "HSCAN":
 		return h.hscanOp(ctx, ops, args)
 
@@ -2446,6 +3340,12 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.ltrimOp(ctx, ops, args)
 	case "RPOPLPUSH":
 		return h.rpoplpushOp(ctx, ops, args)
+	case "LPOS":
+		return h.lposOp(ctx, ops, args)
+	case "LSET":
+		return h.lsetOp(ctx, ops, args)
+	case "LINSERT":
+		return h.linsertOp(ctx, ops, args)
 
 	// Key scan commands
 	case "SCAN":
@@ -2462,6 +3362,20 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.sismemberOp(ctx, ops, args)
 	case "SCARD":
 		return h.scardOp(ctx, ops, args)
+	case "SMISMEMBER":
+		return h.smismemberOp(ctx, ops, args)
+	case "SINTER":
+		return h.sinterOp(ctx, ops, args)
+	case "SINTERSTORE":
+		return h.sinterstoreOp(ctx, ops, args)
+	case "SUNION":
+		return h.sunionOp(ctx, ops, args)
+	case "SUNIONSTORE":
+		return h.sunionstoreOp(ctx, ops, args)
+	case "SDIFF":
+		return h.sdiffOp(ctx, ops, args)
+	case "SDIFFSTORE":
+		return h.sdiffstoreOp(ctx, ops, args)
 	case "SSCAN":
 		return h.sscanOp(ctx, ops, args)
 
@@ -2490,6 +3404,20 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.zincrbyOp(ctx, ops, args)
 	case "ZPOPMIN":
 		return h.zpopminOp(ctx, ops, args)
+	case "ZPOPMAX":
+		return h.zpopmaxOp(ctx, ops, args)
+	case "ZRANK":
+		return h.zrankOp(ctx, ops, args)
+	case "ZREVRANK":
+		return h.zrevrankOp(ctx, ops, args)
+	case "ZCOUNT":
+		return h.zcountOp(ctx, ops, args)
+	case "ZSCAN":
+		return h.zscanOp(ctx, ops, args)
+	case "ZUNIONSTORE":
+		return h.zunionstoreOp(ctx, ops, args)
+	case "ZINTERSTORE":
+		return h.zinterstoreOp(ctx, ops, args)
 
 	// HyperLogLog commands
 	case "PFADD":
@@ -2498,6 +3426,18 @@ func (h *Handler) ExecuteWithOps(ctx context.Context, ops storage.Operations, cm
 		return h.pfcountOp(ctx, ops, args)
 	case "PFMERGE":
 		return h.pfmergeOp(ctx, ops, args)
+
+	// Bitmap commands
+	case "SETBIT":
+		return h.setbitOp(ctx, ops, args)
+	case "GETBIT":
+		return h.getbitOp(ctx, ops, args)
+	case "BITCOUNT":
+		return h.bitcountOp(ctx, ops, args)
+	case "BITOP":
+		return h.bitopOp(ctx, ops, args)
+	case "BITPOS":
+		return h.bitposOp(ctx, ops, args)
 
 	// Server commands
 	case "INFO":

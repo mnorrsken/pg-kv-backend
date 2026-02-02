@@ -1838,5 +1838,1082 @@ func (m *MockStore) FlushDB(ctx context.Context) error {
 	return nil
 }
 
+// ============== Hash Extensions ==============
+
+func (m *MockStore) HIncrByFloat(ctx context.Context, key, field string, increment float64) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		m.hashes[key] = make(map[string]string)
+		m.keyTypes[key] = TypeHash
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	hash, ok := m.hashes[key]
+	if !ok {
+		hash = make(map[string]string)
+		m.hashes[key] = hash
+		m.keyTypes[key] = TypeHash
+	}
+
+	var current float64
+	if val, ok := hash[field]; ok {
+		var err error
+		current, err = strconv.ParseFloat(val, 64)
+		if err != nil {
+			return 0, fmt.Errorf("ERR hash value is not a float")
+		}
+	}
+
+	newVal := current + increment
+	hash[field] = strconv.FormatFloat(newVal, 'f', -1, 64)
+	return newVal, nil
+}
+
+func (m *MockStore) HSetNX(ctx context.Context, key, field, value string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		m.hashes[key] = make(map[string]string)
+		m.keyTypes[key] = TypeHash
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeHash {
+		return false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	hash, ok := m.hashes[key]
+	if !ok {
+		hash = make(map[string]string)
+		m.hashes[key] = hash
+		m.keyTypes[key] = TypeHash
+	}
+
+	if _, exists := hash[field]; exists {
+		return false, nil
+	}
+
+	hash[field] = value
+	return true, nil
+}
+
+// ============== List Extensions ==============
+
+func (m *MockStore) LPos(ctx context.Context, key, element string, rank, count, maxlen int64) ([]int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return nil, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeList {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	list, ok := m.lists[key]
+	if !ok {
+		return nil, nil
+	}
+
+	var positions []int64
+	found := int64(0)
+	if rank >= 0 {
+		for i := int64(0); i < int64(len(list)) && (maxlen == 0 || i < maxlen); i++ {
+			if list[i] == element {
+				found++
+				if found >= rank {
+					positions = append(positions, i)
+					if int64(len(positions)) >= count {
+						break
+					}
+				}
+			}
+		}
+	} else {
+		for i := int64(len(list)) - 1; i >= 0 && (maxlen == 0 || int64(len(list))-1-i < maxlen); i-- {
+			if list[i] == element {
+				found++
+				if found >= -rank {
+					positions = append(positions, i)
+					if int64(len(positions)) >= count {
+						break
+					}
+				}
+			}
+		}
+	}
+	return positions, nil
+}
+
+func (m *MockStore) LSet(ctx context.Context, key string, index int64, element string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		return fmt.Errorf("ERR no such key")
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeList {
+		return fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	list, ok := m.lists[key]
+	if !ok {
+		return fmt.Errorf("ERR no such key")
+	}
+
+	if index < 0 {
+		index = int64(len(list)) + index
+	}
+	if index < 0 || index >= int64(len(list)) {
+		return fmt.Errorf("ERR index out of range")
+	}
+
+	list[index] = element
+	return nil
+}
+
+func (m *MockStore) LInsert(ctx context.Context, key, pivot, element string, before bool) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeList {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	list, ok := m.lists[key]
+	if !ok {
+		return 0, nil
+	}
+
+	// Find pivot
+	pivotIdx := -1
+	for i, v := range list {
+		if v == pivot {
+			pivotIdx = i
+			break
+		}
+	}
+
+	if pivotIdx == -1 {
+		return -1, nil
+	}
+
+	insertIdx := pivotIdx
+	if !before {
+		insertIdx++
+	}
+
+	// Insert element
+	newList := make([]string, len(list)+1)
+	copy(newList[:insertIdx], list[:insertIdx])
+	newList[insertIdx] = element
+	copy(newList[insertIdx+1:], list[insertIdx:])
+	m.lists[key] = newList
+
+	return int64(len(newList)), nil
+}
+
+// ============== Set Extensions ==============
+
+func (m *MockStore) SMIsMember(ctx context.Context, key string, members []string) ([]bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		result := make([]bool, len(members))
+		return result, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeSet {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	set := m.sets[key]
+	result := make([]bool, len(members))
+	for i, member := range members {
+		if set != nil {
+			_, result[i] = set[member]
+		}
+	}
+	return result, nil
+}
+
+func (m *MockStore) SInter(ctx context.Context, keys []string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	// Start with first set
+	first := keys[0]
+	if m.isExpired(first) {
+		return nil, nil
+	}
+	if t, ok := m.keyTypes[first]; ok && t != TypeSet {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	result := make(map[string]struct{})
+	if set, ok := m.sets[first]; ok {
+		for member := range set {
+			result[member] = struct{}{}
+		}
+	}
+
+	// Intersect with remaining sets
+	for _, key := range keys[1:] {
+		if m.isExpired(key) {
+			return nil, nil // Empty intersection
+		}
+		if t, ok := m.keyTypes[key]; ok && t != TypeSet {
+			return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+		}
+
+		set := m.sets[key]
+		for member := range result {
+			if set == nil {
+				delete(result, member)
+			} else if _, exists := set[member]; !exists {
+				delete(result, member)
+			}
+		}
+	}
+
+	members := make([]string, 0, len(result))
+	for member := range result {
+		members = append(members, member)
+	}
+	sort.Strings(members)
+	return members, nil
+}
+
+func (m *MockStore) SInterStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	members, err := m.SInter(ctx, keys)
+	if err != nil {
+		return 0, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.deleteKey(destination)
+	if len(members) > 0 {
+		newSet := make(map[string]struct{})
+		for _, member := range members {
+			newSet[member] = struct{}{}
+		}
+		m.sets[destination] = newSet
+		m.keyTypes[destination] = TypeSet
+	}
+
+	return int64(len(members)), nil
+}
+
+func (m *MockStore) SUnion(ctx context.Context, keys []string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make(map[string]struct{})
+	for _, key := range keys {
+		if m.isExpired(key) {
+			continue
+		}
+		if t, ok := m.keyTypes[key]; ok && t != TypeSet {
+			return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+		}
+
+		if set, ok := m.sets[key]; ok {
+			for member := range set {
+				result[member] = struct{}{}
+			}
+		}
+	}
+
+	members := make([]string, 0, len(result))
+	for member := range result {
+		members = append(members, member)
+	}
+	sort.Strings(members)
+	return members, nil
+}
+
+func (m *MockStore) SUnionStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	members, err := m.SUnion(ctx, keys)
+	if err != nil {
+		return 0, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.deleteKey(destination)
+	if len(members) > 0 {
+		newSet := make(map[string]struct{})
+		for _, member := range members {
+			newSet[member] = struct{}{}
+		}
+		m.sets[destination] = newSet
+		m.keyTypes[destination] = TypeSet
+	}
+
+	return int64(len(members)), nil
+}
+
+func (m *MockStore) SDiff(ctx context.Context, keys []string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	first := keys[0]
+	if m.isExpired(first) {
+		return nil, nil
+	}
+	if t, ok := m.keyTypes[first]; ok && t != TypeSet {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	result := make(map[string]struct{})
+	if set, ok := m.sets[first]; ok {
+		for member := range set {
+			result[member] = struct{}{}
+		}
+	}
+
+	// Remove members found in other sets
+	for _, key := range keys[1:] {
+		if m.isExpired(key) {
+			continue
+		}
+		if t, ok := m.keyTypes[key]; ok && t != TypeSet {
+			return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+		}
+
+		if set, ok := m.sets[key]; ok {
+			for member := range set {
+				delete(result, member)
+			}
+		}
+	}
+
+	members := make([]string, 0, len(result))
+	for member := range result {
+		members = append(members, member)
+	}
+	sort.Strings(members)
+	return members, nil
+}
+
+func (m *MockStore) SDiffStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	members, err := m.SDiff(ctx, keys)
+	if err != nil {
+		return 0, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.deleteKey(destination)
+	if len(members) > 0 {
+		newSet := make(map[string]struct{})
+		for _, member := range members {
+			newSet[member] = struct{}{}
+		}
+		m.sets[destination] = newSet
+		m.keyTypes[destination] = TypeSet
+	}
+
+	return int64(len(members)), nil
+}
+
+// ============== Sorted Set Extensions ==============
+
+func (m *MockStore) ZPopMax(ctx context.Context, key string, count int64) ([]ZMember, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(key) {
+		return nil, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok || len(zset) == 0 {
+		return nil, nil
+	}
+
+	// Sort by score descending
+	members := make([]ZMember, 0, len(zset))
+	for member, score := range zset {
+		members = append(members, ZMember{Member: member, Score: score})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].Score == members[j].Score {
+			return members[i].Member > members[j].Member
+		}
+		return members[i].Score > members[j].Score
+	})
+
+	if int64(len(members)) < count {
+		count = int64(len(members))
+	}
+
+	result := members[:count]
+	for _, m := range result {
+		delete(zset, m.Member)
+	}
+
+	if len(zset) == 0 {
+		m.deleteKey(key)
+	}
+
+	return result, nil
+}
+
+func (m *MockStore) ZRank(ctx context.Context, key, member string) (int64, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return 0, false, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok {
+		return 0, false, nil
+	}
+
+	_, exists := zset[member]
+	if !exists {
+		return 0, false, nil
+	}
+
+	// Sort and find rank
+	members := make([]ZMember, 0, len(zset))
+	for m, score := range zset {
+		members = append(members, ZMember{Member: m, Score: score})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].Score == members[j].Score {
+			return members[i].Member < members[j].Member
+		}
+		return members[i].Score < members[j].Score
+	})
+
+	for i, zm := range members {
+		if zm.Member == member {
+			return int64(i), true, nil
+		}
+	}
+
+	return 0, false, nil
+}
+
+func (m *MockStore) ZRevRank(ctx context.Context, key, member string) (int64, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return 0, false, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok {
+		return 0, false, nil
+	}
+
+	_, exists := zset[member]
+	if !exists {
+		return 0, false, nil
+	}
+
+	// Sort descending and find rank
+	members := make([]ZMember, 0, len(zset))
+	for m, score := range zset {
+		members = append(members, ZMember{Member: m, Score: score})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].Score == members[j].Score {
+			return members[i].Member > members[j].Member
+		}
+		return members[i].Score > members[j].Score
+	})
+
+	for i, zm := range members {
+		if zm.Member == member {
+			return int64(i), true, nil
+		}
+	}
+
+	return 0, false, nil
+}
+
+func (m *MockStore) ZCount(ctx context.Context, key string, min, max float64) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok {
+		return 0, nil
+	}
+
+	var count int64
+	for _, score := range zset {
+		if score >= min && score <= max {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
+func (m *MockStore) ZScan(ctx context.Context, key string, cursor int64, pattern string, count int64) (int64, []ZMember, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return 0, nil, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+		return 0, nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	zset, ok := m.zsets[key]
+	if !ok {
+		return 0, nil, nil
+	}
+
+	// Get all members sorted
+	members := make([]ZMember, 0, len(zset))
+	for member, score := range zset {
+		members = append(members, ZMember{Member: member, Score: score})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		return members[i].Member < members[j].Member
+	})
+
+	// Simple pattern matching
+	var matched []ZMember
+	for i := int(cursor); i < len(members) && int64(len(matched)) < count; i++ {
+		if matchPattern(pattern, members[i].Member) {
+			matched = append(matched, members[i])
+		}
+	}
+
+	nextCursor := cursor + int64(len(matched))
+	if int(nextCursor) >= len(members) {
+		nextCursor = 0
+	}
+
+	return nextCursor, matched, nil
+}
+
+func (m *MockStore) ZUnionStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := make(map[string]float64)
+
+	for i, key := range keys {
+		if m.isExpired(key) {
+			continue
+		}
+		if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+			return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+		}
+
+		weight := 1.0
+		if weights != nil && i < len(weights) {
+			weight = weights[i]
+		}
+
+		zset := m.zsets[key]
+		for member, score := range zset {
+			weightedScore := score * weight
+			if existing, ok := result[member]; ok {
+				switch aggregate {
+				case "SUM":
+					result[member] = existing + weightedScore
+				case "MIN":
+					if weightedScore < existing {
+						result[member] = weightedScore
+					}
+				case "MAX":
+					if weightedScore > existing {
+						result[member] = weightedScore
+					}
+				}
+			} else {
+				result[member] = weightedScore
+			}
+		}
+	}
+
+	m.deleteKey(destination)
+	if len(result) > 0 {
+		m.zsets[destination] = result
+		m.keyTypes[destination] = TypeZSet
+	}
+
+	return int64(len(result)), nil
+}
+
+func (m *MockStore) ZInterStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	// Start with first set
+	first := keys[0]
+	if m.isExpired(first) {
+		m.deleteKey(destination)
+		return 0, nil
+	}
+	if t, ok := m.keyTypes[first]; ok && t != TypeZSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	weight0 := 1.0
+	if weights != nil && len(weights) > 0 {
+		weight0 = weights[0]
+	}
+
+	result := make(map[string]float64)
+	for member, score := range m.zsets[first] {
+		result[member] = score * weight0
+	}
+
+	// Intersect with remaining sets
+	for i := 1; i < len(keys); i++ {
+		key := keys[i]
+		if m.isExpired(key) {
+			m.deleteKey(destination)
+			return 0, nil
+		}
+		if t, ok := m.keyTypes[key]; ok && t != TypeZSet {
+			return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+		}
+
+		weight := 1.0
+		if weights != nil && i < len(weights) {
+			weight = weights[i]
+		}
+
+		zset := m.zsets[key]
+		for member := range result {
+			if score, exists := zset[member]; exists {
+				weightedScore := score * weight
+				switch aggregate {
+				case "SUM":
+					result[member] += weightedScore
+				case "MIN":
+					if weightedScore < result[member] {
+						result[member] = weightedScore
+					}
+				case "MAX":
+					if weightedScore > result[member] {
+						result[member] = weightedScore
+					}
+				}
+			} else {
+				delete(result, member)
+			}
+		}
+	}
+
+	m.deleteKey(destination)
+	if len(result) > 0 {
+		m.zsets[destination] = result
+		m.keyTypes[destination] = TypeZSet
+	}
+
+	return int64(len(result)), nil
+}
+
+// ============== Key Extensions ==============
+
+func (m *MockStore) ExpireAt(ctx context.Context, key string, expireTime time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.keyTypes[key]; !ok || m.isExpired(key) {
+		return false, nil
+	}
+
+	m.expiresAt[key] = expireTime
+	return true, nil
+}
+
+func (m *MockStore) Copy(ctx context.Context, source, destination string, replace bool) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.isExpired(source) {
+		return false, nil
+	}
+
+	srcType, ok := m.keyTypes[source]
+	if !ok {
+		return false, nil
+	}
+
+	// Check if destination exists
+	if _, exists := m.keyTypes[destination]; exists && !replace {
+		return false, nil
+	}
+
+	// Delete destination if replacing
+	if replace {
+		m.deleteKey(destination)
+	}
+
+	// Copy based on type
+	switch srcType {
+	case TypeString:
+		m.strings[destination] = m.strings[source]
+	case TypeHash:
+		newHash := make(map[string]string)
+		for k, v := range m.hashes[source] {
+			newHash[k] = v
+		}
+		m.hashes[destination] = newHash
+	case TypeList:
+		newList := make([]string, len(m.lists[source]))
+		copy(newList, m.lists[source])
+		m.lists[destination] = newList
+	case TypeSet:
+		newSet := make(map[string]struct{})
+		for k := range m.sets[source] {
+			newSet[k] = struct{}{}
+		}
+		m.sets[destination] = newSet
+	case TypeZSet:
+		newZSet := make(map[string]float64)
+		for k, v := range m.zsets[source] {
+			newZSet[k] = v
+		}
+		m.zsets[destination] = newZSet
+	}
+
+	m.keyTypes[destination] = srcType
+
+	// Copy expiration if exists
+	if exp, ok := m.expiresAt[source]; ok {
+		m.expiresAt[destination] = exp
+	}
+
+	return true, nil
+}
+
+// ============== Bitmap Commands ==============
+
+func (m *MockStore) SetBit(ctx context.Context, key string, offset int64, value int) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeString {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	// Get or create the string
+	data := []byte(m.strings[key])
+	byteIndex := offset / 8
+	bitIndex := 7 - (offset % 8)
+
+	// Expand if needed
+	for int64(len(data)) <= byteIndex {
+		data = append(data, 0)
+	}
+
+	// Get old bit
+	oldBit := (data[byteIndex] >> bitIndex) & 1
+
+	// Set new bit
+	if value == 1 {
+		data[byteIndex] |= (1 << bitIndex)
+	} else {
+		data[byteIndex] &^= (1 << bitIndex)
+	}
+
+	m.strings[key] = string(data)
+	m.keyTypes[key] = TypeString
+
+	return int64(oldBit), nil
+}
+
+func (m *MockStore) GetBit(ctx context.Context, key string, offset int64) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeString {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	data := []byte(m.strings[key])
+	byteIndex := offset / 8
+	bitIndex := 7 - (offset % 8)
+
+	if int64(len(data)) <= byteIndex {
+		return 0, nil
+	}
+
+	return int64((data[byteIndex] >> bitIndex) & 1), nil
+}
+
+func (m *MockStore) BitCount(ctx context.Context, key string, start, end int64, useBit bool) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		return 0, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeString {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	data := []byte(m.strings[key])
+	if len(data) == 0 {
+		return 0, nil
+	}
+
+	// Handle negative indices
+	length := int64(len(data))
+	if useBit {
+		length = length * 8
+	}
+
+	if start < 0 {
+		start = length + start
+	}
+	if end < 0 {
+		end = length + end
+	}
+
+	if start < 0 {
+		start = 0
+	}
+	if end >= length {
+		end = length - 1
+	}
+	if start > end {
+		return 0, nil
+	}
+
+	var count int64
+	if useBit {
+		for i := start; i <= end; i++ {
+			byteIdx := i / 8
+			bitIdx := 7 - (i % 8)
+			if int64(len(data)) > byteIdx {
+				if (data[byteIdx]>>bitIdx)&1 == 1 {
+					count++
+				}
+			}
+		}
+	} else {
+		for i := start; i <= end; i++ {
+			b := data[i]
+			// Count bits using Brian Kernighan's algorithm
+			for b != 0 {
+				count++
+				b &= b - 1
+			}
+		}
+	}
+
+	return count, nil
+}
+
+func (m *MockStore) BitOp(ctx context.Context, operation, destKey string, keys []string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Get all source data
+	var maxLen int
+	sources := make([][]byte, len(keys))
+	for i, key := range keys {
+		if t, ok := m.keyTypes[key]; ok && t != TypeString {
+			return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+		}
+		sources[i] = []byte(m.strings[key])
+		if len(sources[i]) > maxLen {
+			maxLen = len(sources[i])
+		}
+	}
+
+	if maxLen == 0 {
+		m.deleteKey(destKey)
+		return 0, nil
+	}
+
+	result := make([]byte, maxLen)
+
+	switch operation {
+	case "AND":
+		for i := 0; i < maxLen; i++ {
+			result[i] = 0xFF
+			for _, src := range sources {
+				if i < len(src) {
+					result[i] &= src[i]
+				} else {
+					result[i] = 0
+				}
+			}
+		}
+	case "OR":
+		for i := 0; i < maxLen; i++ {
+			for _, src := range sources {
+				if i < len(src) {
+					result[i] |= src[i]
+				}
+			}
+		}
+	case "XOR":
+		for i := 0; i < maxLen; i++ {
+			for _, src := range sources {
+				if i < len(src) {
+					result[i] ^= src[i]
+				}
+			}
+		}
+	case "NOT":
+		if len(sources) != 1 {
+			return 0, fmt.Errorf("ERR BITOP NOT requires one and only one key")
+		}
+		for i := 0; i < maxLen; i++ {
+			result[i] = ^sources[0][i]
+		}
+	}
+
+	m.strings[destKey] = string(result)
+	m.keyTypes[destKey] = TypeString
+
+	return int64(maxLen), nil
+}
+
+func (m *MockStore) BitPos(ctx context.Context, key string, bit int, start, end int64, useBit bool) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.isExpired(key) {
+		if bit == 0 {
+			return 0, nil
+		}
+		return -1, nil
+	}
+
+	if t, ok := m.keyTypes[key]; ok && t != TypeString {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	data := []byte(m.strings[key])
+	if len(data) == 0 {
+		if bit == 0 {
+			return 0, nil
+		}
+		return -1, nil
+	}
+
+	length := int64(len(data))
+	if useBit {
+		length = length * 8
+	}
+
+	// Handle indices
+	if start < 0 {
+		start = length + start
+	}
+	if end < 0 {
+		end = length + end
+	}
+
+	if start < 0 {
+		start = 0
+	}
+	if end >= length {
+		end = length - 1
+	}
+
+	if useBit {
+		for i := start; i <= end; i++ {
+			byteIdx := i / 8
+			bitIdx := 7 - (i % 8)
+			if int64(len(data)) > byteIdx {
+				b := (data[byteIdx] >> bitIdx) & 1
+				if int(b) == bit {
+					return i, nil
+				}
+			}
+		}
+	} else {
+		for i := start; i <= end; i++ {
+			b := data[i]
+			for j := 7; j >= 0; j-- {
+				if int((b>>j)&1) == bit {
+					return i*8 + int64(7-j), nil
+				}
+			}
+		}
+	}
+
+	return -1, nil
+}
+
+// Helper function for pattern matching
+func matchPattern(pattern, s string) bool {
+	if pattern == "*" {
+		return true
+	}
+	// Simple pattern matching - convert glob to regex
+	regexPattern := strings.ReplaceAll(pattern, "*", ".*")
+	regexPattern = strings.ReplaceAll(regexPattern, "?", ".")
+	regexPattern = "^" + regexPattern + "$"
+	matched, _ := regexp.MatchString(regexPattern, s)
+	return matched
+}
+
 // Ensure MockStore implements Backend
 var _ Backend = (*MockStore)(nil)

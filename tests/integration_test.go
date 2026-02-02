@@ -4074,3 +4074,816 @@ func TestPFAddLargeCardinality(t *testing.T) {
 		t.Errorf("Expected approximately 1000, got %d", count)
 	}
 }
+
+// ============== Hash Extension Tests ==============
+
+func TestHIncrByFloat(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Increment new field
+	result, err := ts.client.HIncrByFloat(ctx, "myhash", "field1", 1.5).Result()
+	if err != nil {
+		t.Fatalf("HINCRBYFLOAT failed: %v", err)
+	}
+	if result != 1.5 {
+		t.Errorf("Expected 1.5, got %f", result)
+	}
+
+	// Increment again
+	result, err = ts.client.HIncrByFloat(ctx, "myhash", "field1", 2.5).Result()
+	if err != nil {
+		t.Fatalf("HINCRBYFLOAT failed: %v", err)
+	}
+	if result != 4.0 {
+		t.Errorf("Expected 4.0, got %f", result)
+	}
+
+	// Negative increment
+	result, err = ts.client.HIncrByFloat(ctx, "myhash", "field1", -1.0).Result()
+	if err != nil {
+		t.Fatalf("HINCRBYFLOAT failed: %v", err)
+	}
+	if result != 3.0 {
+		t.Errorf("Expected 3.0, got %f", result)
+	}
+}
+
+func TestHSetNX(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set new field
+	result, err := ts.client.HSetNX(ctx, "myhash", "field1", "value1").Result()
+	if err != nil {
+		t.Fatalf("HSETNX failed: %v", err)
+	}
+	if !result {
+		t.Error("Expected true for new field")
+	}
+
+	// Try to set same field again
+	result, err = ts.client.HSetNX(ctx, "myhash", "field1", "value2").Result()
+	if err != nil {
+		t.Fatalf("HSETNX failed: %v", err)
+	}
+	if result {
+		t.Error("Expected false for existing field")
+	}
+
+	// Verify value unchanged
+	val, err := ts.client.HGet(ctx, "myhash", "field1").Result()
+	if err != nil {
+		t.Fatalf("HGET failed: %v", err)
+	}
+	if val != "value1" {
+		t.Errorf("Expected value1, got %s", val)
+	}
+}
+
+// ============== List Extension Tests ==============
+
+func TestLPos(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create list with duplicate elements
+	ts.client.RPush(ctx, "mylist", "a", "b", "c", "b", "d", "b")
+
+	// Find first occurrence
+	result, err := ts.client.LPos(ctx, "mylist", "b", redis.LPosArgs{}).Result()
+	if err != nil {
+		t.Fatalf("LPOS failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1, got %d", result)
+	}
+
+	// Find with rank 2 (second occurrence)
+	result, err = ts.client.LPos(ctx, "mylist", "b", redis.LPosArgs{Rank: 2}).Result()
+	if err != nil {
+		t.Fatalf("LPOS with RANK failed: %v", err)
+	}
+	if result != 3 {
+		t.Errorf("Expected 3, got %d", result)
+	}
+
+	// Find element that doesn't exist
+	_, err = ts.client.LPos(ctx, "mylist", "z", redis.LPosArgs{}).Result()
+	if err != redis.Nil {
+		t.Errorf("Expected redis.Nil for missing element, got %v", err)
+	}
+}
+
+func TestLSet(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create list
+	ts.client.RPush(ctx, "mylist", "a", "b", "c")
+
+	// Set element at index 1
+	err := ts.client.LSet(ctx, "mylist", 1, "B").Err()
+	if err != nil {
+		t.Fatalf("LSET failed: %v", err)
+	}
+
+	// Verify
+	result, err := ts.client.LIndex(ctx, "mylist", 1).Result()
+	if err != nil {
+		t.Fatalf("LINDEX failed: %v", err)
+	}
+	if result != "B" {
+		t.Errorf("Expected B, got %s", result)
+	}
+
+	// Set with negative index
+	err = ts.client.LSet(ctx, "mylist", -1, "C").Err()
+	if err != nil {
+		t.Fatalf("LSET with negative index failed: %v", err)
+	}
+
+	result, err = ts.client.LIndex(ctx, "mylist", -1).Result()
+	if err != nil {
+		t.Fatalf("LINDEX failed: %v", err)
+	}
+	if result != "C" {
+		t.Errorf("Expected C, got %s", result)
+	}
+}
+
+func TestLInsert(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create list
+	ts.client.RPush(ctx, "mylist", "a", "c")
+
+	// Insert before c
+	result, err := ts.client.LInsertBefore(ctx, "mylist", "c", "b").Result()
+	if err != nil {
+		t.Fatalf("LINSERT BEFORE failed: %v", err)
+	}
+	if result != 3 {
+		t.Errorf("Expected 3, got %d", result)
+	}
+
+	// Insert after c
+	result, err = ts.client.LInsertAfter(ctx, "mylist", "c", "d").Result()
+	if err != nil {
+		t.Fatalf("LINSERT AFTER failed: %v", err)
+	}
+	if result != 4 {
+		t.Errorf("Expected 4, got %d", result)
+	}
+
+	// Verify list
+	vals, err := ts.client.LRange(ctx, "mylist", 0, -1).Result()
+	if err != nil {
+		t.Fatalf("LRANGE failed: %v", err)
+	}
+	expected := []string{"a", "b", "c", "d"}
+	for i, v := range expected {
+		if vals[i] != v {
+			t.Errorf("Expected %s at index %d, got %s", v, i, vals[i])
+		}
+	}
+}
+
+// ============== Set Extension Tests ==============
+
+func TestSMIsMember(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create set
+	ts.client.SAdd(ctx, "myset", "a", "b", "c")
+
+	// Check multiple members
+	result, err := ts.client.SMIsMember(ctx, "myset", "a", "x", "b", "y").Result()
+	if err != nil {
+		t.Fatalf("SMISMEMBER failed: %v", err)
+	}
+
+	expected := []bool{true, false, true, false}
+	for i, v := range expected {
+		if result[i] != v {
+			t.Errorf("Expected %v at index %d, got %v", v, i, result[i])
+		}
+	}
+}
+
+func TestSInter(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sets
+	ts.client.SAdd(ctx, "set1", "a", "b", "c")
+	ts.client.SAdd(ctx, "set2", "b", "c", "d")
+
+	// Get intersection
+	result, err := ts.client.SInter(ctx, "set1", "set2").Result()
+	if err != nil {
+		t.Fatalf("SINTER failed: %v", err)
+	}
+
+	// Should have b and c
+	if len(result) != 2 {
+		t.Errorf("Expected 2 elements, got %d", len(result))
+	}
+}
+
+func TestSInterStore(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sets
+	ts.client.SAdd(ctx, "set1", "a", "b", "c")
+	ts.client.SAdd(ctx, "set2", "b", "c", "d")
+
+	// Store intersection
+	result, err := ts.client.SInterStore(ctx, "dest", "set1", "set2").Result()
+	if err != nil {
+		t.Fatalf("SINTERSTORE failed: %v", err)
+	}
+	if result != 2 {
+		t.Errorf("Expected 2, got %d", result)
+	}
+
+	// Verify dest
+	members, _ := ts.client.SMembers(ctx, "dest").Result()
+	if len(members) != 2 {
+		t.Errorf("Expected 2 members in dest, got %d", len(members))
+	}
+}
+
+func TestSUnion(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sets
+	ts.client.SAdd(ctx, "set1", "a", "b")
+	ts.client.SAdd(ctx, "set2", "c", "d")
+
+	// Get union
+	result, err := ts.client.SUnion(ctx, "set1", "set2").Result()
+	if err != nil {
+		t.Fatalf("SUNION failed: %v", err)
+	}
+
+	if len(result) != 4 {
+		t.Errorf("Expected 4 elements, got %d", len(result))
+	}
+}
+
+func TestSUnionStore(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sets
+	ts.client.SAdd(ctx, "set1", "a", "b")
+	ts.client.SAdd(ctx, "set2", "c", "d")
+
+	// Store union
+	result, err := ts.client.SUnionStore(ctx, "dest", "set1", "set2").Result()
+	if err != nil {
+		t.Fatalf("SUNIONSTORE failed: %v", err)
+	}
+	if result != 4 {
+		t.Errorf("Expected 4, got %d", result)
+	}
+}
+
+func TestSDiff(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sets
+	ts.client.SAdd(ctx, "set1", "a", "b", "c")
+	ts.client.SAdd(ctx, "set2", "b", "c", "d")
+
+	// Get difference
+	result, err := ts.client.SDiff(ctx, "set1", "set2").Result()
+	if err != nil {
+		t.Fatalf("SDIFF failed: %v", err)
+	}
+
+	// Should have only "a"
+	if len(result) != 1 || result[0] != "a" {
+		t.Errorf("Expected [a], got %v", result)
+	}
+}
+
+func TestSDiffStore(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sets
+	ts.client.SAdd(ctx, "set1", "a", "b", "c")
+	ts.client.SAdd(ctx, "set2", "b", "c", "d")
+
+	// Store difference
+	result, err := ts.client.SDiffStore(ctx, "dest", "set1", "set2").Result()
+	if err != nil {
+		t.Fatalf("SDIFFSTORE failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1, got %d", result)
+	}
+}
+
+// ============== Sorted Set Extension Tests ==============
+
+func TestZPopMax(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sorted set
+	ts.client.ZAdd(ctx, "myzset", redis.Z{Score: 1, Member: "a"}, redis.Z{Score: 2, Member: "b"}, redis.Z{Score: 3, Member: "c"})
+
+	// Pop max
+	result, err := ts.client.ZPopMax(ctx, "myzset", 1).Result()
+	if err != nil {
+		t.Fatalf("ZPOPMAX failed: %v", err)
+	}
+
+	if len(result) != 1 || result[0].Member != "c" || result[0].Score != 3 {
+		t.Errorf("Expected [{c 3}], got %v", result)
+	}
+
+	// Pop 2 more
+	result, err = ts.client.ZPopMax(ctx, "myzset", 2).Result()
+	if err != nil {
+		t.Fatalf("ZPOPMAX failed: %v", err)
+	}
+
+	if len(result) != 2 {
+		t.Errorf("Expected 2 elements, got %d", len(result))
+	}
+}
+
+func TestZRank(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sorted set
+	ts.client.ZAdd(ctx, "myzset", redis.Z{Score: 1, Member: "a"}, redis.Z{Score: 2, Member: "b"}, redis.Z{Score: 3, Member: "c"})
+
+	// Get rank
+	result, err := ts.client.ZRank(ctx, "myzset", "b").Result()
+	if err != nil {
+		t.Fatalf("ZRANK failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1, got %d", result)
+	}
+
+	// Non-existent member
+	_, err = ts.client.ZRank(ctx, "myzset", "z").Result()
+	if err != redis.Nil {
+		t.Errorf("Expected redis.Nil for missing member, got %v", err)
+	}
+}
+
+func TestZRevRank(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sorted set
+	ts.client.ZAdd(ctx, "myzset", redis.Z{Score: 1, Member: "a"}, redis.Z{Score: 2, Member: "b"}, redis.Z{Score: 3, Member: "c"})
+
+	// Get reverse rank
+	result, err := ts.client.ZRevRank(ctx, "myzset", "b").Result()
+	if err != nil {
+		t.Fatalf("ZREVRANK failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1, got %d", result)
+	}
+}
+
+func TestZCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sorted set
+	ts.client.ZAdd(ctx, "myzset",
+		redis.Z{Score: 1, Member: "a"},
+		redis.Z{Score: 2, Member: "b"},
+		redis.Z{Score: 3, Member: "c"},
+		redis.Z{Score: 4, Member: "d"},
+		redis.Z{Score: 5, Member: "e"},
+	)
+
+	// Count in range
+	result, err := ts.client.ZCount(ctx, "myzset", "2", "4").Result()
+	if err != nil {
+		t.Fatalf("ZCOUNT failed: %v", err)
+	}
+	if result != 3 {
+		t.Errorf("Expected 3, got %d", result)
+	}
+
+	// Count with -inf/+inf
+	result, err = ts.client.ZCount(ctx, "myzset", "-inf", "+inf").Result()
+	if err != nil {
+		t.Fatalf("ZCOUNT failed: %v", err)
+	}
+	if result != 5 {
+		t.Errorf("Expected 5, got %d", result)
+	}
+}
+
+func TestZScan(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sorted set
+	ts.client.ZAdd(ctx, "myzset",
+		redis.Z{Score: 1, Member: "a"},
+		redis.Z{Score: 2, Member: "b"},
+		redis.Z{Score: 3, Member: "c"},
+	)
+
+	// Scan
+	keys, cursor, err := ts.client.ZScan(ctx, "myzset", 0, "*", 10).Result()
+	if err != nil {
+		t.Fatalf("ZSCAN failed: %v", err)
+	}
+
+	// Should have member/score pairs
+	if len(keys) < 6 { // 3 members * 2 (member + score)
+		t.Errorf("Expected at least 6 elements (3 member/score pairs), got %d", len(keys))
+	}
+
+	// Cursor should be 0 when done
+	if cursor != 0 {
+		t.Logf("Cursor not 0, may need more iterations: %d", cursor)
+	}
+}
+
+func TestZUnionStore(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sorted sets
+	ts.client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "a"}, redis.Z{Score: 2, Member: "b"})
+	ts.client.ZAdd(ctx, "zset2", redis.Z{Score: 3, Member: "b"}, redis.Z{Score: 4, Member: "c"})
+
+	// Union store with SUM aggregate (default)
+	result, err := ts.client.ZUnionStore(ctx, "dest", &redis.ZStore{
+		Keys: []string{"zset1", "zset2"},
+	}).Result()
+	if err != nil {
+		t.Fatalf("ZUNIONSTORE failed: %v", err)
+	}
+	if result != 3 {
+		t.Errorf("Expected 3, got %d", result)
+	}
+
+	// Check score of b (should be 2 + 3 = 5)
+	score, err := ts.client.ZScore(ctx, "dest", "b").Result()
+	if err != nil {
+		t.Fatalf("ZSCORE failed: %v", err)
+	}
+	if score != 5 {
+		t.Errorf("Expected score 5, got %f", score)
+	}
+}
+
+func TestZInterStore(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Create sorted sets
+	ts.client.ZAdd(ctx, "zset1", redis.Z{Score: 1, Member: "a"}, redis.Z{Score: 2, Member: "b"})
+	ts.client.ZAdd(ctx, "zset2", redis.Z{Score: 3, Member: "b"}, redis.Z{Score: 4, Member: "c"})
+
+	// Intersect store
+	result, err := ts.client.ZInterStore(ctx, "dest", &redis.ZStore{
+		Keys: []string{"zset1", "zset2"},
+	}).Result()
+	if err != nil {
+		t.Fatalf("ZINTERSTORE failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1, got %d", result)
+	}
+
+	// Check score of b (should be 2 + 3 = 5)
+	score, err := ts.client.ZScore(ctx, "dest", "b").Result()
+	if err != nil {
+		t.Fatalf("ZSCORE failed: %v", err)
+	}
+	if score != 5 {
+		t.Errorf("Expected score 5, got %f", score)
+	}
+}
+
+// ============== Key Extension Tests ==============
+
+func TestExpireAt(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set a key
+	ts.client.Set(ctx, "mykey", "myvalue", 0)
+
+	// Set expiration at specific time (1 second from now)
+	expireTime := time.Now().Add(1 * time.Second)
+	result, err := ts.client.ExpireAt(ctx, "mykey", expireTime).Result()
+	if err != nil {
+		t.Fatalf("EXPIREAT failed: %v", err)
+	}
+	if !result {
+		t.Error("Expected true")
+	}
+
+	// Key should exist
+	exists, _ := ts.client.Exists(ctx, "mykey").Result()
+	if exists != 1 {
+		t.Error("Expected key to exist")
+	}
+
+	// Wait for expiration
+	time.Sleep(1100 * time.Millisecond)
+
+	// Key should be expired
+	exists, _ = ts.client.Exists(ctx, "mykey").Result()
+	if exists != 0 {
+		t.Error("Expected key to be expired")
+	}
+}
+
+func TestPExpireAt(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set a key
+	ts.client.Set(ctx, "mykey", "myvalue", 0)
+
+	// Set expiration at specific time (500ms from now)
+	expireTime := time.Now().Add(500 * time.Millisecond)
+	result, err := ts.client.PExpireAt(ctx, "mykey", expireTime).Result()
+	if err != nil {
+		t.Fatalf("PEXPIREAT failed: %v", err)
+	}
+	if !result {
+		t.Error("Expected true")
+	}
+
+	// Key should exist
+	exists, _ := ts.client.Exists(ctx, "mykey").Result()
+	if exists != 1 {
+		t.Error("Expected key to exist")
+	}
+
+	// Wait for expiration
+	time.Sleep(600 * time.Millisecond)
+
+	// Key should be expired
+	exists, _ = ts.client.Exists(ctx, "mykey").Result()
+	if exists != 0 {
+		t.Error("Expected key to be expired")
+	}
+}
+
+func TestCopy(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set source key
+	ts.client.Set(ctx, "source", "value", 0)
+
+	// Copy to destination
+	result, err := ts.client.Copy(ctx, "source", "dest", 0, false).Result()
+	if err != nil {
+		t.Fatalf("COPY failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1, got %d", result)
+	}
+
+	// Verify destination
+	val, err := ts.client.Get(ctx, "dest").Result()
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	if val != "value" {
+		t.Errorf("Expected value, got %s", val)
+	}
+
+	// Copy with REPLACE when dest exists
+	ts.client.Set(ctx, "dest", "oldvalue", 0)
+	result, err = ts.client.Copy(ctx, "source", "dest", 0, true).Result()
+	if err != nil {
+		t.Fatalf("COPY with REPLACE failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1, got %d", result)
+	}
+}
+
+// ============== Bitmap Tests ==============
+
+func TestSetBitGetBit(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set bit at offset 7
+	result, err := ts.client.SetBit(ctx, "mybitmap", 7, 1).Result()
+	if err != nil {
+		t.Fatalf("SETBIT failed: %v", err)
+	}
+	if result != 0 {
+		t.Errorf("Expected old value 0, got %d", result)
+	}
+
+	// Get bit at offset 7
+	bit, err := ts.client.GetBit(ctx, "mybitmap", 7).Result()
+	if err != nil {
+		t.Fatalf("GETBIT failed: %v", err)
+	}
+	if bit != 1 {
+		t.Errorf("Expected 1, got %d", bit)
+	}
+
+	// Get bit at unset offset
+	bit, err = ts.client.GetBit(ctx, "mybitmap", 0).Result()
+	if err != nil {
+		t.Fatalf("GETBIT failed: %v", err)
+	}
+	if bit != 0 {
+		t.Errorf("Expected 0, got %d", bit)
+	}
+
+	// Set same bit again, should return 1 (old value)
+	result, err = ts.client.SetBit(ctx, "mybitmap", 7, 1).Result()
+	if err != nil {
+		t.Fatalf("SETBIT failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected old value 1, got %d", result)
+	}
+}
+
+func TestBitCount(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set some bits
+	ts.client.SetBit(ctx, "mybitmap", 0, 1)
+	ts.client.SetBit(ctx, "mybitmap", 7, 1)
+	ts.client.SetBit(ctx, "mybitmap", 8, 1)
+	ts.client.SetBit(ctx, "mybitmap", 15, 1)
+
+	// Count all bits
+	result, err := ts.client.BitCount(ctx, "mybitmap", nil).Result()
+	if err != nil {
+		t.Fatalf("BITCOUNT failed: %v", err)
+	}
+	if result != 4 {
+		t.Errorf("Expected 4, got %d", result)
+	}
+
+	// Count bits in first byte only
+	result, err = ts.client.BitCount(ctx, "mybitmap", &redis.BitCount{Start: 0, End: 0}).Result()
+	if err != nil {
+		t.Fatalf("BITCOUNT failed: %v", err)
+	}
+	if result != 2 {
+		t.Errorf("Expected 2, got %d", result)
+	}
+}
+
+func TestBitOp(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set up test data
+	ts.client.Set(ctx, "key1", "\xff\x00", 0) // 11111111 00000000
+	ts.client.Set(ctx, "key2", "\x0f\x0f", 0) // 00001111 00001111
+
+	// AND
+	result, err := ts.client.BitOpAnd(ctx, "dest_and", "key1", "key2").Result()
+	if err != nil {
+		t.Fatalf("BITOP AND failed: %v", err)
+	}
+	if result != 2 {
+		t.Errorf("Expected 2 bytes, got %d", result)
+	}
+
+	// OR
+	result, err = ts.client.BitOpOr(ctx, "dest_or", "key1", "key2").Result()
+	if err != nil {
+		t.Fatalf("BITOP OR failed: %v", err)
+	}
+	if result != 2 {
+		t.Errorf("Expected 2 bytes, got %d", result)
+	}
+
+	// XOR
+	result, err = ts.client.BitOpXor(ctx, "dest_xor", "key1", "key2").Result()
+	if err != nil {
+		t.Fatalf("BITOP XOR failed: %v", err)
+	}
+	if result != 2 {
+		t.Errorf("Expected 2 bytes, got %d", result)
+	}
+
+	// NOT
+	result, err = ts.client.BitOpNot(ctx, "dest_not", "key1").Result()
+	if err != nil {
+		t.Fatalf("BITOP NOT failed: %v", err)
+	}
+	if result != 2 {
+		t.Errorf("Expected 2 bytes, got %d", result)
+	}
+}
+
+func TestBitPos(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Set up test data - 00000000 11111111
+	ts.client.Set(ctx, "mykey", "\x00\xff", 0)
+
+	// Find first 1 bit
+	result, err := ts.client.BitPos(ctx, "mykey", 1).Result()
+	if err != nil {
+		t.Fatalf("BITPOS failed: %v", err)
+	}
+	if result != 8 {
+		t.Errorf("Expected 8, got %d", result)
+	}
+
+	// Find first 0 bit
+	result, err = ts.client.BitPos(ctx, "mykey", 0).Result()
+	if err != nil {
+		t.Fatalf("BITPOS failed: %v", err)
+	}
+	if result != 0 {
+		t.Errorf("Expected 0, got %d", result)
+	}
+
+	// Find 1 bit starting from byte 1
+	result, err = ts.client.BitPosSpan(ctx, "mykey", 1, 1, -1, "byte").Result()
+	if err != nil {
+		t.Fatalf("BITPOS with range failed: %v", err)
+	}
+	if result != 8 {
+		t.Errorf("Expected 8, got %d", result)
+	}
+}

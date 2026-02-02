@@ -501,5 +501,199 @@ func (s *CachedStore) BeginTx(ctx context.Context) (storage.Transaction, error) 
 	return s.backend.BeginTx(ctx)
 }
 
+// ============== Hash Extensions ==============
+
+func (s *CachedStore) HIncrByFloat(ctx context.Context, key, field string, increment float64) (float64, error) {
+	result, err := s.backend.HIncrByFloat(ctx, key, field, increment)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
+}
+
+func (s *CachedStore) HSetNX(ctx context.Context, key, field, value string) (bool, error) {
+	result, err := s.backend.HSetNX(ctx, key, field, value)
+	if err != nil {
+		return false, err
+	}
+	if result {
+		s.invalidate(ctx, key)
+	}
+	return result, nil
+}
+
+// ============== List Extensions ==============
+
+func (s *CachedStore) LPos(ctx context.Context, key, element string, rank, count, maxlen int64) ([]int64, error) {
+	return s.backend.LPos(ctx, key, element, rank, count, maxlen)
+}
+
+func (s *CachedStore) LSet(ctx context.Context, key string, index int64, element string) error {
+	err := s.backend.LSet(ctx, key, index, element)
+	if err != nil {
+		return err
+	}
+	s.invalidate(ctx, key)
+	return nil
+}
+
+func (s *CachedStore) LInsert(ctx context.Context, key, pivot, element string, before bool) (int64, error) {
+	result, err := s.backend.LInsert(ctx, key, pivot, element, before)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
+}
+
+// ============== Set Extensions ==============
+
+func (s *CachedStore) SMIsMember(ctx context.Context, key string, members []string) ([]bool, error) {
+	return s.backend.SMIsMember(ctx, key, members)
+}
+
+func (s *CachedStore) SInter(ctx context.Context, keys []string) ([]string, error) {
+	return s.backend.SInter(ctx, keys)
+}
+
+func (s *CachedStore) SInterStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	result, err := s.backend.SInterStore(ctx, destination, keys)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, destination)
+	return result, nil
+}
+
+func (s *CachedStore) SUnion(ctx context.Context, keys []string) ([]string, error) {
+	return s.backend.SUnion(ctx, keys)
+}
+
+func (s *CachedStore) SUnionStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	result, err := s.backend.SUnionStore(ctx, destination, keys)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, destination)
+	return result, nil
+}
+
+func (s *CachedStore) SDiff(ctx context.Context, keys []string) ([]string, error) {
+	return s.backend.SDiff(ctx, keys)
+}
+
+func (s *CachedStore) SDiffStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	result, err := s.backend.SDiffStore(ctx, destination, keys)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, destination)
+	return result, nil
+}
+
+// ============== Sorted Set Extensions ==============
+
+func (s *CachedStore) ZPopMax(ctx context.Context, key string, count int64) ([]storage.ZMember, error) {
+	result, err := s.backend.ZPopMax(ctx, key, count)
+	if err != nil {
+		return nil, err
+	}
+	if len(result) > 0 {
+		s.invalidate(ctx, key)
+	}
+	return result, nil
+}
+
+func (s *CachedStore) ZRank(ctx context.Context, key, member string) (int64, bool, error) {
+	return s.backend.ZRank(ctx, key, member)
+}
+
+func (s *CachedStore) ZRevRank(ctx context.Context, key, member string) (int64, bool, error) {
+	return s.backend.ZRevRank(ctx, key, member)
+}
+
+func (s *CachedStore) ZCount(ctx context.Context, key string, min, max float64) (int64, error) {
+	return s.backend.ZCount(ctx, key, min, max)
+}
+
+func (s *CachedStore) ZScan(ctx context.Context, key string, cursor int64, pattern string, count int64) (int64, []storage.ZMember, error) {
+	return s.backend.ZScan(ctx, key, cursor, pattern, count)
+}
+
+func (s *CachedStore) ZUnionStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	result, err := s.backend.ZUnionStore(ctx, destination, keys, weights, aggregate)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, destination)
+	return result, nil
+}
+
+func (s *CachedStore) ZInterStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	result, err := s.backend.ZInterStore(ctx, destination, keys, weights, aggregate)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, destination)
+	return result, nil
+}
+
+// ============== Key Extensions ==============
+
+func (s *CachedStore) ExpireAt(ctx context.Context, key string, expireTime time.Time) (bool, error) {
+	result, err := s.backend.ExpireAt(ctx, key, expireTime)
+	if err != nil {
+		return false, err
+	}
+	if result {
+		s.invalidate(ctx, key)
+	}
+	return result, nil
+}
+
+func (s *CachedStore) Copy(ctx context.Context, source, destination string, replace bool) (bool, error) {
+	result, err := s.backend.Copy(ctx, source, destination, replace)
+	if err != nil {
+		return false, err
+	}
+	if result {
+		s.invalidate(ctx, destination)
+	}
+	return result, nil
+}
+
+// ============== Bitmap Commands ==============
+
+func (s *CachedStore) SetBit(ctx context.Context, key string, offset int64, value int) (int64, error) {
+	result, err := s.backend.SetBit(ctx, key, offset, value)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, key)
+	return result, nil
+}
+
+func (s *CachedStore) GetBit(ctx context.Context, key string, offset int64) (int64, error) {
+	return s.backend.GetBit(ctx, key, offset)
+}
+
+func (s *CachedStore) BitCount(ctx context.Context, key string, start, end int64, useBit bool) (int64, error) {
+	return s.backend.BitCount(ctx, key, start, end, useBit)
+}
+
+func (s *CachedStore) BitOp(ctx context.Context, operation, destKey string, keys []string) (int64, error) {
+	result, err := s.backend.BitOp(ctx, operation, destKey, keys)
+	if err != nil {
+		return 0, err
+	}
+	s.invalidate(ctx, destKey)
+	return result, nil
+}
+
+func (s *CachedStore) BitPos(ctx context.Context, key string, bit int, start, end int64, useBit bool) (int64, error) {
+	return s.backend.BitPos(ctx, key, bit, start, end, useBit)
+}
+
 // Ensure CachedStore implements Backend
 var _ storage.Backend = (*CachedStore)(nil)

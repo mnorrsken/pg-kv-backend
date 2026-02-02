@@ -1127,6 +1127,93 @@ func (o queryOps) hIncrBy(ctx context.Context, q Querier, key, field string, inc
 	return newValue, nil
 }
 
+func (o queryOps) hIncrByFloat(ctx context.Context, q Querier, key, field string, increment float64) (float64, error) {
+	// Check if key exists but is wrong type
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return 0, err
+	}
+	if keyType != TypeNone && keyType != TypeHash {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	// Encode field name for PostgreSQL
+	encField := encodeField(field)
+
+	// Get current value or default to 0
+	var currentValue float64 = 0
+	var valueBytes []byte
+	err = q.QueryRow(ctx,
+		"SELECT value FROM kv_hashes WHERE key = $1 AND field = $2 AND (expires_at IS NULL OR expires_at > NOW())",
+		key, encField,
+	).Scan(&valueBytes)
+	if err == nil {
+		// Parse existing value as float
+		currentValue, err = strconv.ParseFloat(string(valueBytes), 64)
+		if err != nil {
+			return 0, fmt.Errorf("ERR hash value is not a valid float")
+		}
+	} else if err != pgx.ErrNoRows {
+		return 0, err
+	}
+
+	// Calculate new value
+	newValue := currentValue + increment
+
+	// Format without trailing zeros, but preserve precision
+	valueStr := strconv.FormatFloat(newValue, 'f', -1, 64)
+
+	// Upsert the new value
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_hashes (key, field, value) VALUES ($1, $2, $3)
+		 ON CONFLICT (key, field) DO UPDATE SET value = $3`,
+		key, encField, []byte(valueStr),
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	// Set metadata
+	if err := o.setMeta(ctx, q, key, TypeHash, nil); err != nil {
+		return 0, err
+	}
+
+	return newValue, nil
+}
+
+func (o queryOps) hSetNX(ctx context.Context, q Querier, key, field, value string) (bool, error) {
+	// Check if key exists but is wrong type
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return false, err
+	}
+	if keyType != TypeNone && keyType != TypeHash {
+		return false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	// Encode field name for PostgreSQL
+	encField := encodeField(field)
+
+	// Try to insert only if not exists
+	result, err := q.Exec(ctx,
+		`INSERT INTO kv_hashes (key, field, value) VALUES ($1, $2, $3)
+		 ON CONFLICT (key, field) DO NOTHING`,
+		key, encField, []byte(value),
+	)
+	if err != nil {
+		return false, err
+	}
+
+	if result.RowsAffected() > 0 {
+		// Set metadata
+		if err := o.setMeta(ctx, q, key, TypeHash, nil); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // ============== List Commands ==============
 
 func (o queryOps) lPush(ctx context.Context, q Querier, key string, values []string) (int64, error) {
@@ -1882,6 +1969,1202 @@ func (o queryOps) lTrim(ctx context.Context, q Querier, key string, start, stop 
 	)
 
 	return err
+}
+
+// LPos finds the position of an element in a list
+func (o queryOps) lPos(ctx context.Context, q Querier, key, element string, rank, count, maxlen int64) ([]int64, error) {
+	// Get all elements in order
+	rows, err := q.Query(ctx,
+		`SELECT ROW_NUMBER() OVER (ORDER BY idx) - 1 AS pos, value 
+		 FROM kv_lists WHERE key = $1 
+		 ORDER BY idx`,
+		key,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var positions []int64
+	elemBytes := []byte(element)
+	matches := int64(0)
+	skipped := int64(0)
+	scanned := int64(0)
+
+	for rows.Next() {
+		var pos int64
+		var value []byte
+		if err := rows.Scan(&pos, &value); err != nil {
+			return nil, err
+		}
+
+		scanned++
+		if maxlen > 0 && scanned > maxlen {
+			break
+		}
+
+		if string(value) == string(elemBytes) {
+			matches++
+			// Skip matches based on rank (1-indexed)
+			if rank > 0 && skipped < rank-1 {
+				skipped++
+				continue
+			}
+			positions = append(positions, pos)
+			if count > 0 && int64(len(positions)) >= count {
+				break
+			}
+		}
+	}
+
+	return positions, nil
+}
+
+// LSet sets an element at a specific index
+func (o queryOps) lSet(ctx context.Context, q Querier, key string, index int64, element string) error {
+	// Get total count
+	var total int64
+	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&total); err != nil {
+		return err
+	}
+
+	if total == 0 {
+		return fmt.Errorf("ERR no such key")
+	}
+
+	// Convert negative index
+	if index < 0 {
+		index = total + index
+	}
+	if index < 0 || index >= total {
+		return fmt.Errorf("ERR index out of range")
+	}
+
+	// Get the idx value at the position
+	var idx int64
+	err := q.QueryRow(ctx,
+		`SELECT idx FROM kv_lists WHERE key = $1 ORDER BY idx LIMIT 1 OFFSET $2`,
+		key, index,
+	).Scan(&idx)
+	if err != nil {
+		return err
+	}
+
+	// Update the value
+	_, err = q.Exec(ctx,
+		"UPDATE kv_lists SET value = $3 WHERE key = $1 AND idx = $2",
+		key, idx, []byte(element),
+	)
+	return err
+}
+
+// LInsert inserts an element before or after a pivot element
+func (o queryOps) lInsert(ctx context.Context, q Querier, key, pivot, element string, before bool) (int64, error) {
+	// Find the pivot element
+	var pivotIdx int64
+	err := q.QueryRow(ctx,
+		`SELECT idx FROM kv_lists WHERE key = $1 AND value = $2 ORDER BY idx LIMIT 1`,
+		key, []byte(pivot),
+	).Scan(&pivotIdx)
+	if err == pgx.ErrNoRows {
+		return -1, nil // Pivot not found
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	// Use advisory lock to serialize list operations
+	_, err = q.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", key)
+	if err != nil {
+		return 0, err
+	}
+
+	var newIdx int64
+	if before {
+		// Insert before: find a gap or shift
+		newIdx = pivotIdx - 1
+	} else {
+		// Insert after
+		newIdx = pivotIdx + 1
+	}
+
+	// Insert the new element
+	_, err = q.Exec(ctx,
+		"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
+		key, newIdx, []byte(element),
+	)
+	if err != nil {
+		// Conflict - need to reindex
+		// Shift all elements to make room
+		if before {
+			_, err = q.Exec(ctx,
+				"UPDATE kv_lists SET idx = idx - 1 WHERE key = $1 AND idx < $2",
+				key, pivotIdx,
+			)
+		} else {
+			_, err = q.Exec(ctx,
+				"UPDATE kv_lists SET idx = idx + 1 WHERE key = $1 AND idx > $2",
+				key, pivotIdx,
+			)
+		}
+		if err != nil {
+			return 0, err
+		}
+		// Retry insert
+		_, err = q.Exec(ctx,
+			"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
+			key, newIdx, []byte(element),
+		)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	// Return new length
+	var length int64
+	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&length); err != nil {
+		return 0, err
+	}
+	return length, nil
+}
+
+// ============== Set Operation Extensions ==============
+
+func (o queryOps) sMIsMember(ctx context.Context, q Querier, key string, members []string) ([]bool, error) {
+	result := make([]bool, len(members))
+
+	// Build a set of existing members for O(1) lookup
+	existing := make(map[string]bool)
+	rows, err := q.Query(ctx,
+		"SELECT member FROM kv_sets WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var member []byte
+		if err := rows.Scan(&member); err != nil {
+			return nil, err
+		}
+		existing[string(member)] = true
+	}
+
+	for i, member := range members {
+		result[i] = existing[member]
+	}
+	return result, nil
+}
+
+func (o queryOps) sInter(ctx context.Context, q Querier, keys []string) ([]string, error) {
+	if len(keys) == 0 {
+		return []string{}, nil
+	}
+
+	// Get members of first set
+	first, err := o.sMembers(ctx, q, keys[0])
+	if err != nil {
+		return nil, err
+	}
+	if len(first) == 0 {
+		return []string{}, nil
+	}
+
+	// For each subsequent set, keep only common members
+	result := make(map[string]bool)
+	for _, m := range first {
+		result[m] = true
+	}
+
+	for i := 1; i < len(keys); i++ {
+		members, err := o.sMembers(ctx, q, keys[i])
+		if err != nil {
+			return nil, err
+		}
+		nextResult := make(map[string]bool)
+		for _, m := range members {
+			if result[m] {
+				nextResult[m] = true
+			}
+		}
+		result = nextResult
+		if len(result) == 0 {
+			return []string{}, nil
+		}
+	}
+
+	out := make([]string, 0, len(result))
+	for m := range result {
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+func (o queryOps) sInterStore(ctx context.Context, q Querier, destination string, keys []string) (int64, error) {
+	members, err := o.sInter(ctx, q, keys)
+	if err != nil {
+		return 0, err
+	}
+
+	// Delete destination key
+	if err := o.deleteKeyFromAllTables(ctx, q, destination); err != nil {
+		return 0, err
+	}
+
+	if len(members) == 0 {
+		return 0, nil
+	}
+
+	// Add members to destination
+	return o.sAdd(ctx, q, destination, members)
+}
+
+func (o queryOps) sUnion(ctx context.Context, q Querier, keys []string) ([]string, error) {
+	if len(keys) == 0 {
+		return []string{}, nil
+	}
+
+	result := make(map[string]bool)
+	for _, key := range keys {
+		members, err := o.sMembers(ctx, q, key)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range members {
+			result[m] = true
+		}
+	}
+
+	out := make([]string, 0, len(result))
+	for m := range result {
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+func (o queryOps) sUnionStore(ctx context.Context, q Querier, destination string, keys []string) (int64, error) {
+	members, err := o.sUnion(ctx, q, keys)
+	if err != nil {
+		return 0, err
+	}
+
+	// Delete destination key
+	if err := o.deleteKeyFromAllTables(ctx, q, destination); err != nil {
+		return 0, err
+	}
+
+	if len(members) == 0 {
+		return 0, nil
+	}
+
+	// Add members to destination
+	return o.sAdd(ctx, q, destination, members)
+}
+
+func (o queryOps) sDiff(ctx context.Context, q Querier, keys []string) ([]string, error) {
+	if len(keys) == 0 {
+		return []string{}, nil
+	}
+
+	// Get members of first set
+	first, err := o.sMembers(ctx, q, keys[0])
+	if err != nil {
+		return nil, err
+	}
+	if len(first) == 0 {
+		return []string{}, nil
+	}
+
+	result := make(map[string]bool)
+	for _, m := range first {
+		result[m] = true
+	}
+
+	// Remove members that exist in any other set
+	for i := 1; i < len(keys); i++ {
+		members, err := o.sMembers(ctx, q, keys[i])
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range members {
+			delete(result, m)
+		}
+	}
+
+	out := make([]string, 0, len(result))
+	for m := range result {
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+func (o queryOps) sDiffStore(ctx context.Context, q Querier, destination string, keys []string) (int64, error) {
+	members, err := o.sDiff(ctx, q, keys)
+	if err != nil {
+		return 0, err
+	}
+
+	// Delete destination key
+	if err := o.deleteKeyFromAllTables(ctx, q, destination); err != nil {
+		return 0, err
+	}
+
+	if len(members) == 0 {
+		return 0, nil
+	}
+
+	// Add members to destination
+	return o.sAdd(ctx, q, destination, members)
+}
+
+// ============== Sorted Set Extensions ==============
+
+func (o queryOps) zPopMax(ctx context.Context, q Querier, key string, count int64) ([]ZMember, error) {
+	// Get the highest-scored members
+	rows, err := q.Query(ctx,
+		`SELECT member, score FROM kv_zsets 
+		 WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())
+		 ORDER BY score DESC, member DESC
+		 LIMIT $2`,
+		key, count,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []ZMember
+	for rows.Next() {
+		var member []byte
+		var score float64
+		if err := rows.Scan(&member, &score); err != nil {
+			return nil, err
+		}
+		members = append(members, ZMember{Member: string(member), Score: score})
+	}
+
+	// Delete the popped members
+	if len(members) > 0 {
+		memberBytes := make([][]byte, len(members))
+		for i, m := range members {
+			memberBytes[i] = []byte(m.Member)
+		}
+		_, err = q.Exec(ctx,
+			"DELETE FROM kv_zsets WHERE key = $1 AND member = ANY($2)",
+			key, memberBytes,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return members, nil
+}
+
+func (o queryOps) zRank(ctx context.Context, q Querier, key, member string) (int64, bool, error) {
+	var rank int64
+	err := q.QueryRow(ctx,
+		`SELECT rank FROM (
+			SELECT member, ROW_NUMBER() OVER (ORDER BY score ASC, member ASC) - 1 AS rank
+			FROM kv_zsets WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())
+		) sub WHERE member = $2`,
+		key, []byte(member),
+	).Scan(&rank)
+
+	if err == pgx.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return rank, true, nil
+}
+
+func (o queryOps) zRevRank(ctx context.Context, q Querier, key, member string) (int64, bool, error) {
+	var rank int64
+	err := q.QueryRow(ctx,
+		`SELECT rank FROM (
+			SELECT member, ROW_NUMBER() OVER (ORDER BY score DESC, member DESC) - 1 AS rank
+			FROM kv_zsets WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())
+		) sub WHERE member = $2`,
+		key, []byte(member),
+	).Scan(&rank)
+
+	if err == pgx.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return rank, true, nil
+}
+
+func (o queryOps) zCount(ctx context.Context, q Querier, key string, min, max float64) (int64, error) {
+	var count int64
+	err := q.QueryRow(ctx,
+		`SELECT COUNT(*) FROM kv_zsets 
+		 WHERE key = $1 AND score >= $2 AND score <= $3 AND (expires_at IS NULL OR expires_at > NOW())`,
+		key, min, max,
+	).Scan(&count)
+	return count, err
+}
+
+func (o queryOps) zScan(ctx context.Context, q Querier, key string, cursor int64, pattern string, count int64) (int64, []ZMember, error) {
+	// Get all members
+	rows, err := q.Query(ctx,
+		`SELECT member, score FROM kv_zsets 
+		 WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())
+		 ORDER BY score ASC, member ASC`,
+		key,
+	)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+
+	var allMembers []ZMember
+	for rows.Next() {
+		var member []byte
+		var score float64
+		if err := rows.Scan(&member, &score); err != nil {
+			return 0, nil, err
+		}
+		// Apply pattern matching
+		if pattern != "" && pattern != "*" {
+			matched, _ := matchGlob(pattern, string(member))
+			if !matched {
+				continue
+			}
+		}
+		allMembers = append(allMembers, ZMember{Member: string(member), Score: score})
+	}
+
+	// Simulate cursor-based pagination
+	start := int(cursor)
+	if start >= len(allMembers) {
+		return 0, []ZMember{}, nil
+	}
+
+	end := start + int(count)
+	if end > len(allMembers) {
+		end = len(allMembers)
+	}
+
+	result := allMembers[start:end]
+
+	var nextCursor int64
+	if end >= len(allMembers) {
+		nextCursor = 0
+	} else {
+		nextCursor = int64(end)
+	}
+
+	return nextCursor, result, nil
+}
+
+func matchGlob(pattern, s string) (bool, error) {
+	pi, si := 0, 0
+	starIdx, matchIdx := -1, 0
+
+	for si < len(s) {
+		if pi < len(pattern) && (pattern[pi] == '?' || pattern[pi] == s[si]) {
+			pi++
+			si++
+		} else if pi < len(pattern) && pattern[pi] == '*' {
+			starIdx = pi
+			matchIdx = si
+			pi++
+		} else if starIdx != -1 {
+			pi = starIdx + 1
+			matchIdx++
+			si = matchIdx
+		} else {
+			return false, nil
+		}
+	}
+
+	for pi < len(pattern) && pattern[pi] == '*' {
+		pi++
+	}
+
+	return pi == len(pattern), nil
+}
+
+func (o queryOps) zUnionStore(ctx context.Context, q Querier, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	if len(weights) == 0 {
+		weights = make([]float64, len(keys))
+		for i := range weights {
+			weights[i] = 1.0
+		}
+	}
+
+	// Collect all members with aggregated scores
+	memberScores := make(map[string][]float64)
+	for i, key := range keys {
+		weight := weights[i]
+		members, err := o.zRange(ctx, q, key, 0, -1, true)
+		if err != nil {
+			return 0, err
+		}
+		for _, m := range members {
+			memberScores[m.Member] = append(memberScores[m.Member], m.Score*weight)
+		}
+	}
+
+	// Delete destination
+	if err := o.deleteKeyFromAllTables(ctx, q, destination); err != nil {
+		return 0, err
+	}
+
+	if len(memberScores) == 0 {
+		return 0, nil
+	}
+
+	// Calculate final scores and add to destination
+	var members []ZMember
+	for member, scores := range memberScores {
+		var finalScore float64
+		switch strings.ToUpper(aggregate) {
+		case "MIN":
+			finalScore = scores[0]
+			for _, s := range scores[1:] {
+				if s < finalScore {
+					finalScore = s
+				}
+			}
+		case "MAX":
+			finalScore = scores[0]
+			for _, s := range scores[1:] {
+				if s > finalScore {
+					finalScore = s
+				}
+			}
+		default: // SUM
+			for _, s := range scores {
+				finalScore += s
+			}
+		}
+		members = append(members, ZMember{Member: member, Score: finalScore})
+	}
+
+	return o.zAdd(ctx, q, destination, members)
+}
+
+func (o queryOps) zInterStore(ctx context.Context, q Querier, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	if len(weights) == 0 {
+		weights = make([]float64, len(keys))
+		for i := range weights {
+			weights[i] = 1.0
+		}
+	}
+
+	// Get members from first set
+	firstMembers, err := o.zRange(ctx, q, keys[0], 0, -1, true)
+	if err != nil {
+		return 0, err
+	}
+
+	// Build map of member -> scores from all sets
+	memberScores := make(map[string][]float64)
+	for _, m := range firstMembers {
+		memberScores[m.Member] = []float64{m.Score * weights[0]}
+	}
+
+	// Intersect with remaining sets
+	for i := 1; i < len(keys); i++ {
+		members, err := o.zRange(ctx, q, keys[i], 0, -1, true)
+		if err != nil {
+			return 0, err
+		}
+		setMembers := make(map[string]float64)
+		for _, m := range members {
+			setMembers[m.Member] = m.Score
+		}
+
+		// Keep only members that exist in all sets
+		for member := range memberScores {
+			if score, ok := setMembers[member]; ok {
+				memberScores[member] = append(memberScores[member], score*weights[i])
+			} else {
+				delete(memberScores, member)
+			}
+		}
+	}
+
+	// Delete destination
+	if err := o.deleteKeyFromAllTables(ctx, q, destination); err != nil {
+		return 0, err
+	}
+
+	if len(memberScores) == 0 {
+		return 0, nil
+	}
+
+	// Calculate final scores and add to destination
+	var members []ZMember
+	for member, scores := range memberScores {
+		var finalScore float64
+		switch strings.ToUpper(aggregate) {
+		case "MIN":
+			finalScore = scores[0]
+			for _, s := range scores[1:] {
+				if s < finalScore {
+					finalScore = s
+				}
+			}
+		case "MAX":
+			finalScore = scores[0]
+			for _, s := range scores[1:] {
+				if s > finalScore {
+					finalScore = s
+				}
+			}
+		default: // SUM
+			for _, s := range scores {
+				finalScore += s
+			}
+		}
+		members = append(members, ZMember{Member: member, Score: finalScore})
+	}
+
+	return o.zAdd(ctx, q, destination, members)
+}
+
+// ============== Key Extensions ==============
+
+func (o queryOps) expireAt(ctx context.Context, q Querier, key string, timestamp time.Time) (bool, error) {
+	result, err := q.Exec(ctx,
+		`UPDATE kv_meta SET expires_at = $2 
+		 WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())`,
+		key, timestamp,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	if result.RowsAffected() == 0 {
+		return false, nil
+	}
+
+	// Update expires_at in the data table
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return false, err
+	}
+
+	var table string
+	switch keyType {
+	case TypeString:
+		table = "kv_strings"
+	case TypeHash:
+		table = "kv_hashes"
+	case TypeList:
+		table = "kv_lists"
+	case TypeSet:
+		table = "kv_sets"
+	case TypeZSet:
+		table = "kv_zsets"
+	default:
+		return true, nil
+	}
+
+	_, err = q.Exec(ctx, fmt.Sprintf("UPDATE %s SET expires_at = $2 WHERE key = $1", table), key, timestamp)
+	return err == nil, err
+}
+
+func (o queryOps) copyKey(ctx context.Context, q Querier, source, destination string, replace bool) (bool, error) {
+	// Get source key type
+	keyType, err := o.getKeyType(ctx, q, source)
+	if err != nil {
+		return false, err
+	}
+	if keyType == TypeNone {
+		return false, nil // Source doesn't exist
+	}
+
+	// Check if destination exists
+	destType, err := o.getKeyType(ctx, q, destination)
+	if err != nil {
+		return false, err
+	}
+	if destType != TypeNone && !replace {
+		return false, nil // Destination exists and replace not set
+	}
+
+	// Delete destination if it exists
+	if destType != TypeNone {
+		if err := o.deleteKeyFromAllTables(ctx, q, destination); err != nil {
+			return false, err
+		}
+	}
+
+	// Copy based on type
+	switch keyType {
+	case TypeString:
+		var value []byte
+		var expiresAt *time.Time
+		err := q.QueryRow(ctx,
+			"SELECT value, expires_at FROM kv_strings WHERE key = $1",
+			source,
+		).Scan(&value, &expiresAt)
+		if err != nil {
+			return false, err
+		}
+		_, err = q.Exec(ctx,
+			"INSERT INTO kv_strings (key, value, expires_at) VALUES ($1, $2, $3)",
+			destination, value, expiresAt,
+		)
+		if err != nil {
+			return false, err
+		}
+		if err := o.setMeta(ctx, q, destination, TypeString, expiresAt); err != nil {
+			return false, err
+		}
+
+	case TypeHash:
+		rows, err := q.Query(ctx,
+			"SELECT field, value, expires_at FROM kv_hashes WHERE key = $1",
+			source,
+		)
+		if err != nil {
+			return false, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var field string
+			var value []byte
+			var expiresAt *time.Time
+			if err := rows.Scan(&field, &value, &expiresAt); err != nil {
+				return false, err
+			}
+			_, err = q.Exec(ctx,
+				"INSERT INTO kv_hashes (key, field, value, expires_at) VALUES ($1, $2, $3, $4)",
+				destination, field, value, expiresAt,
+			)
+			if err != nil {
+				return false, err
+			}
+		}
+		if err := o.setMeta(ctx, q, destination, TypeHash, nil); err != nil {
+			return false, err
+		}
+
+	case TypeList:
+		rows, err := q.Query(ctx,
+			"SELECT idx, value, expires_at FROM kv_lists WHERE key = $1",
+			source,
+		)
+		if err != nil {
+			return false, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var idx int64
+			var value []byte
+			var expiresAt *time.Time
+			if err := rows.Scan(&idx, &value, &expiresAt); err != nil {
+				return false, err
+			}
+			_, err = q.Exec(ctx,
+				"INSERT INTO kv_lists (key, idx, value, expires_at) VALUES ($1, $2, $3, $4)",
+				destination, idx, value, expiresAt,
+			)
+			if err != nil {
+				return false, err
+			}
+		}
+		if err := o.setMeta(ctx, q, destination, TypeList, nil); err != nil {
+			return false, err
+		}
+
+	case TypeSet:
+		rows, err := q.Query(ctx,
+			"SELECT member, expires_at FROM kv_sets WHERE key = $1",
+			source,
+		)
+		if err != nil {
+			return false, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var member []byte
+			var expiresAt *time.Time
+			if err := rows.Scan(&member, &expiresAt); err != nil {
+				return false, err
+			}
+			_, err = q.Exec(ctx,
+				"INSERT INTO kv_sets (key, member, expires_at) VALUES ($1, $2, $3)",
+				destination, member, expiresAt,
+			)
+			if err != nil {
+				return false, err
+			}
+		}
+		if err := o.setMeta(ctx, q, destination, TypeSet, nil); err != nil {
+			return false, err
+		}
+
+	case TypeZSet:
+		rows, err := q.Query(ctx,
+			"SELECT member, score, expires_at FROM kv_zsets WHERE key = $1",
+			source,
+		)
+		if err != nil {
+			return false, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var member []byte
+			var score float64
+			var expiresAt *time.Time
+			if err := rows.Scan(&member, &score, &expiresAt); err != nil {
+				return false, err
+			}
+			_, err = q.Exec(ctx,
+				"INSERT INTO kv_zsets (key, member, score, expires_at) VALUES ($1, $2, $3, $4)",
+				destination, member, score, expiresAt,
+			)
+			if err != nil {
+				return false, err
+			}
+		}
+		if err := o.setMeta(ctx, q, destination, TypeZSet, nil); err != nil {
+			return false, err
+		}
+	}
+
+	return true, nil
+}
+
+// ============== Bitmap Commands ==============
+
+func (o queryOps) setBit(ctx context.Context, q Querier, key string, offset int64, value int) (int64, error) {
+	// Get existing value or create empty
+	var data []byte
+	err := q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&data)
+	if err == pgx.ErrNoRows {
+		data = []byte{}
+	} else if err != nil {
+		return 0, err
+	}
+
+	// Extend buffer if needed
+	byteOffset := offset / 8
+	if int64(len(data)) <= byteOffset {
+		newData := make([]byte, byteOffset+1)
+		copy(newData, data)
+		data = newData
+	}
+
+	// Get old bit value
+	bitOffset := 7 - (offset % 8)
+	oldBit := int64((data[byteOffset] >> bitOffset) & 1)
+
+	// Set new bit value
+	if value == 1 {
+		data[byteOffset] |= (1 << bitOffset)
+	} else {
+		data[byteOffset] &^= (1 << bitOffset)
+	}
+
+	// Save back
+	_, err = q.Exec(ctx,
+		`INSERT INTO kv_strings (key, value) VALUES ($1, $2)
+		 ON CONFLICT (key) DO UPDATE SET value = $2`,
+		key, data,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := o.setMeta(ctx, q, key, TypeString, nil); err != nil {
+		return 0, err
+	}
+
+	return oldBit, nil
+}
+
+func (o queryOps) getBit(ctx context.Context, q Querier, key string, offset int64) (int64, error) {
+	var data []byte
+	err := q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&data)
+	if err == pgx.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	byteOffset := offset / 8
+	if int64(len(data)) <= byteOffset {
+		return 0, nil
+	}
+
+	bitOffset := 7 - (offset % 8)
+	return int64((data[byteOffset] >> bitOffset) & 1), nil
+}
+
+func (o queryOps) bitCount(ctx context.Context, q Querier, key string, start, end int64, useBit bool) (int64, error) {
+	var data []byte
+	err := q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&data)
+	if err == pgx.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	if len(data) == 0 {
+		return 0, nil
+	}
+
+	length := int64(len(data))
+
+	if useBit {
+		// Bit mode
+		totalBits := length * 8
+		if start < 0 {
+			start = totalBits + start
+		}
+		if end < 0 {
+			end = totalBits + end
+		}
+		if start < 0 {
+			start = 0
+		}
+		if end >= totalBits {
+			end = totalBits - 1
+		}
+		if start > end {
+			return 0, nil
+		}
+
+		var count int64
+		for i := start; i <= end; i++ {
+			byteIdx := i / 8
+			bitIdx := 7 - (i % 8)
+			if data[byteIdx]&(1<<bitIdx) != 0 {
+				count++
+			}
+		}
+		return count, nil
+	}
+
+	// Byte mode
+	if start < 0 {
+		start = length + start
+	}
+	if end < 0 {
+		end = length + end
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end >= length {
+		end = length - 1
+	}
+	if start > end {
+		return 0, nil
+	}
+
+	var count int64
+	for i := start; i <= end; i++ {
+		// Count bits in this byte (popcount)
+		b := data[i]
+		for b != 0 {
+			count += int64(b & 1)
+			b >>= 1
+		}
+	}
+	return count, nil
+}
+
+func (o queryOps) bitOp(ctx context.Context, q Querier, operation, destKey string, keys []string) (int64, error) {
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	// Get all values
+	values := make([][]byte, len(keys))
+	maxLen := 0
+	for i, key := range keys {
+		var data []byte
+		err := q.QueryRow(ctx,
+			"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+			key,
+		).Scan(&data)
+		if err == pgx.ErrNoRows {
+			values[i] = []byte{}
+		} else if err != nil {
+			return 0, err
+		} else {
+			values[i] = data
+		}
+		if len(values[i]) > maxLen {
+			maxLen = len(values[i])
+		}
+	}
+
+	// Pad all values to maxLen
+	for i := range values {
+		if len(values[i]) < maxLen {
+			newVal := make([]byte, maxLen)
+			copy(newVal, values[i])
+			values[i] = newVal
+		}
+	}
+
+	result := make([]byte, maxLen)
+	op := strings.ToUpper(operation)
+
+	switch op {
+	case "AND":
+		if len(values) > 0 {
+			copy(result, values[0])
+			for i := 1; i < len(values); i++ {
+				for j := 0; j < maxLen; j++ {
+					result[j] &= values[i][j]
+				}
+			}
+		}
+	case "OR":
+		for i := 0; i < len(values); i++ {
+			for j := 0; j < maxLen; j++ {
+				result[j] |= values[i][j]
+			}
+		}
+	case "XOR":
+		for i := 0; i < len(values); i++ {
+			for j := 0; j < maxLen; j++ {
+				result[j] ^= values[i][j]
+			}
+		}
+	case "NOT":
+		if len(values) > 0 {
+			for j := 0; j < len(values[0]); j++ {
+				result[j] = ^values[0][j]
+			}
+		}
+	default:
+		return 0, fmt.Errorf("ERR BITOP: unsupported operation '%s'", operation)
+	}
+
+	// Delete destination and save result
+	if err := o.deleteKeyFromAllTables(ctx, q, destKey); err != nil {
+		return 0, err
+	}
+
+	_, err := q.Exec(ctx,
+		`INSERT INTO kv_strings (key, value) VALUES ($1, $2)
+		 ON CONFLICT (key) DO UPDATE SET value = $2`,
+		destKey, result,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := o.setMeta(ctx, q, destKey, TypeString, nil); err != nil {
+		return 0, err
+	}
+
+	return int64(maxLen), nil
+}
+
+func (o queryOps) bitPos(ctx context.Context, q Querier, key string, bit int, start, end int64, useBit bool) (int64, error) {
+	var data []byte
+	err := q.QueryRow(ctx,
+		"SELECT value FROM kv_strings WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+		key,
+	).Scan(&data)
+	if err == pgx.ErrNoRows {
+		if bit == 0 {
+			return 0, nil
+		}
+		return -1, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	if len(data) == 0 {
+		if bit == 0 {
+			return 0, nil
+		}
+		return -1, nil
+	}
+
+	length := int64(len(data))
+
+	if useBit {
+		// Bit mode
+		totalBits := length * 8
+		if start < 0 {
+			start = totalBits + start
+		}
+		if end < 0 {
+			end = totalBits + end
+		}
+		if start < 0 {
+			start = 0
+		}
+		if end >= totalBits {
+			end = totalBits - 1
+		}
+
+		for i := start; i <= end; i++ {
+			byteIdx := i / 8
+			bitIdx := 7 - (i % 8)
+			bitVal := int((data[byteIdx] >> bitIdx) & 1)
+			if bitVal == bit {
+				return i, nil
+			}
+		}
+		return -1, nil
+	}
+
+	// Byte mode - search within byte range
+	if start < 0 {
+		start = length + start
+	}
+	if end < 0 {
+		end = length + end
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end >= length {
+		end = length - 1
+	}
+
+	for i := start; i <= end; i++ {
+		for j := 7; j >= 0; j-- {
+			bitVal := int((data[i] >> j) & 1)
+			if bitVal == bit {
+				return i*8 + (7 - int64(j)), nil
+			}
+		}
+	}
+
+	// If looking for 0 and not found in range, return first bit after range
+	if bit == 0 && end < length-1 {
+		return (end + 1) * 8, nil
+	}
+
+	return -1, nil
 }
 
 // ============== HyperLogLog Commands ==============

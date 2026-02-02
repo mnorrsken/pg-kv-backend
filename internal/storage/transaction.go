@@ -143,6 +143,36 @@ func (t *TxStore) Rename(ctx context.Context, oldKey, newKey string) error {
 	return t.ops.rename(ctx, t.querier(), oldKey, newKey)
 }
 
+func (t *TxStore) ExpireAt(ctx context.Context, key string, timestamp time.Time) (bool, error) {
+	return t.ops.expireAt(ctx, t.querier(), key, timestamp)
+}
+
+func (t *TxStore) Copy(ctx context.Context, source, destination string, replace bool) (bool, error) {
+	return t.ops.copyKey(ctx, t.querier(), source, destination, replace)
+}
+
+// ============== Bitmap Commands ==============
+
+func (t *TxStore) SetBit(ctx context.Context, key string, offset int64, value int) (int64, error) {
+	return t.ops.setBit(ctx, t.querier(), key, offset, value)
+}
+
+func (t *TxStore) GetBit(ctx context.Context, key string, offset int64) (int64, error) {
+	return t.ops.getBit(ctx, t.querier(), key, offset)
+}
+
+func (t *TxStore) BitCount(ctx context.Context, key string, start, end int64, useBit bool) (int64, error) {
+	return t.ops.bitCount(ctx, t.querier(), key, start, end, useBit)
+}
+
+func (t *TxStore) BitOp(ctx context.Context, operation, destKey string, keys []string) (int64, error) {
+	return t.ops.bitOp(ctx, t.querier(), operation, destKey, keys)
+}
+
+func (t *TxStore) BitPos(ctx context.Context, key string, bit int, start, end int64, useBit bool) (int64, error) {
+	return t.ops.bitPos(ctx, t.querier(), key, bit, start, end, useBit)
+}
+
 // ============== Hash Commands ==============
 
 func (t *TxStore) HGet(ctx context.Context, key, field string) (string, bool, error) {
@@ -185,6 +215,14 @@ func (t *TxStore) HIncrBy(ctx context.Context, key, field string, increment int6
 	return t.ops.hIncrBy(ctx, t.querier(), key, field, increment)
 }
 
+func (t *TxStore) HIncrByFloat(ctx context.Context, key, field string, increment float64) (float64, error) {
+	return t.ops.hIncrByFloat(ctx, t.querier(), key, field, increment)
+}
+
+func (t *TxStore) HSetNX(ctx context.Context, key, field, value string) (bool, error) {
+	return t.ops.hSetNX(ctx, t.querier(), key, field, value)
+}
+
 // ============== List Commands ==============
 
 func (t *TxStore) LPush(ctx context.Context, key string, values []string) (int64, error) {
@@ -215,6 +253,30 @@ func (t *TxStore) LIndex(ctx context.Context, key string, index int64) (string, 
 	return t.ops.lIndex(ctx, t.querier(), key, index)
 }
 
+func (t *TxStore) LRem(ctx context.Context, key string, count int64, element string) (int64, error) {
+	return t.ops.lRem(ctx, t.querier(), key, count, element)
+}
+
+func (t *TxStore) LTrim(ctx context.Context, key string, start, stop int64) error {
+	return t.ops.lTrim(ctx, t.querier(), key, start, stop)
+}
+
+func (t *TxStore) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
+	return t.ops.rPopLPush(ctx, t.querier(), source, destination)
+}
+
+func (t *TxStore) LPos(ctx context.Context, key, element string, rank, count, maxlen int64) ([]int64, error) {
+	return t.ops.lPos(ctx, t.querier(), key, element, rank, count, maxlen)
+}
+
+func (t *TxStore) LSet(ctx context.Context, key string, index int64, element string) error {
+	return t.ops.lSet(ctx, t.querier(), key, index, element)
+}
+
+func (t *TxStore) LInsert(ctx context.Context, key, pivot, element string, before bool) (int64, error) {
+	return t.ops.lInsert(ctx, t.querier(), key, pivot, element, before)
+}
+
 // ============== Set Commands ==============
 
 func (t *TxStore) SAdd(ctx context.Context, key string, members []string) (int64, error) {
@@ -235,6 +297,34 @@ func (t *TxStore) SIsMember(ctx context.Context, key, member string) (bool, erro
 
 func (t *TxStore) SCard(ctx context.Context, key string) (int64, error) {
 	return t.ops.sCard(ctx, t.querier(), key)
+}
+
+func (t *TxStore) SMIsMember(ctx context.Context, key string, members []string) ([]bool, error) {
+	return t.ops.sMIsMember(ctx, t.querier(), key, members)
+}
+
+func (t *TxStore) SInter(ctx context.Context, keys []string) ([]string, error) {
+	return t.ops.sInter(ctx, t.querier(), keys)
+}
+
+func (t *TxStore) SInterStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	return t.ops.sInterStore(ctx, t.querier(), destination, keys)
+}
+
+func (t *TxStore) SUnion(ctx context.Context, keys []string) ([]string, error) {
+	return t.ops.sUnion(ctx, t.querier(), keys)
+}
+
+func (t *TxStore) SUnionStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	return t.ops.sUnionStore(ctx, t.querier(), destination, keys)
+}
+
+func (t *TxStore) SDiff(ctx context.Context, keys []string) ([]string, error) {
+	return t.ops.sDiff(ctx, t.querier(), keys)
+}
+
+func (t *TxStore) SDiffStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	return t.ops.sDiffStore(ctx, t.querier(), destination, keys)
 }
 
 // ============== Sorted Set Commands ==============
@@ -279,16 +369,32 @@ func (t *TxStore) ZPopMin(ctx context.Context, key string, count int64) ([]ZMemb
 	return t.ops.zPopMin(ctx, t.querier(), key, count)
 }
 
-func (t *TxStore) LRem(ctx context.Context, key string, count int64, element string) (int64, error) {
-	return t.ops.lRem(ctx, t.querier(), key, count, element)
+func (t *TxStore) ZPopMax(ctx context.Context, key string, count int64) ([]ZMember, error) {
+	return t.ops.zPopMax(ctx, t.querier(), key, count)
 }
 
-func (t *TxStore) LTrim(ctx context.Context, key string, start, stop int64) error {
-	return t.ops.lTrim(ctx, t.querier(), key, start, stop)
+func (t *TxStore) ZRank(ctx context.Context, key, member string) (int64, bool, error) {
+	return t.ops.zRank(ctx, t.querier(), key, member)
 }
 
-func (t *TxStore) RPopLPush(ctx context.Context, source, destination string) (string, bool, error) {
-	return t.ops.rPopLPush(ctx, t.querier(), source, destination)
+func (t *TxStore) ZRevRank(ctx context.Context, key, member string) (int64, bool, error) {
+	return t.ops.zRevRank(ctx, t.querier(), key, member)
+}
+
+func (t *TxStore) ZCount(ctx context.Context, key string, min, max float64) (int64, error) {
+	return t.ops.zCount(ctx, t.querier(), key, min, max)
+}
+
+func (t *TxStore) ZScan(ctx context.Context, key string, cursor int64, pattern string, count int64) (int64, []ZMember, error) {
+	return t.ops.zScan(ctx, t.querier(), key, cursor, pattern, count)
+}
+
+func (t *TxStore) ZUnionStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	return t.ops.zUnionStore(ctx, t.querier(), destination, keys, weights, aggregate)
+}
+
+func (t *TxStore) ZInterStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	return t.ops.zInterStore(ctx, t.querier(), destination, keys, weights, aggregate)
 }
 
 // ============== HyperLogLog Commands ==============

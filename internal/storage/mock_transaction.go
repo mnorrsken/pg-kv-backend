@@ -295,5 +295,121 @@ func (t *MockTransaction) DBSize(ctx context.Context) (int64, error) {
 	return t.parent.DBSize(ctx)
 }
 
+// ============== Hash Extensions ==============
+
+func (t *MockTransaction) HIncrByFloat(ctx context.Context, key, field string, increment float64) (float64, error) {
+	return t.parent.HIncrByFloat(ctx, key, field, increment)
+}
+
+func (t *MockTransaction) HSetNX(ctx context.Context, key, field, value string) (bool, error) {
+	return t.parent.HSetNX(ctx, key, field, value)
+}
+
+// ============== List Extensions ==============
+
+func (t *MockTransaction) LPos(ctx context.Context, key, element string, rank, count, maxlen int64) ([]int64, error) {
+	return t.parent.LPos(ctx, key, element, rank, count, maxlen)
+}
+
+func (t *MockTransaction) LSet(ctx context.Context, key string, index int64, element string) error {
+	return t.parent.LSet(ctx, key, index, element)
+}
+
+func (t *MockTransaction) LInsert(ctx context.Context, key, pivot, element string, before bool) (int64, error) {
+	return t.parent.LInsert(ctx, key, pivot, element, before)
+}
+
+// ============== Set Extensions ==============
+
+func (t *MockTransaction) SMIsMember(ctx context.Context, key string, members []string) ([]bool, error) {
+	return t.parent.SMIsMember(ctx, key, members)
+}
+
+func (t *MockTransaction) SInter(ctx context.Context, keys []string) ([]string, error) {
+	return t.parent.SInter(ctx, keys)
+}
+
+func (t *MockTransaction) SInterStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	return t.parent.SInterStore(ctx, destination, keys)
+}
+
+func (t *MockTransaction) SUnion(ctx context.Context, keys []string) ([]string, error) {
+	return t.parent.SUnion(ctx, keys)
+}
+
+func (t *MockTransaction) SUnionStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	return t.parent.SUnionStore(ctx, destination, keys)
+}
+
+func (t *MockTransaction) SDiff(ctx context.Context, keys []string) ([]string, error) {
+	return t.parent.SDiff(ctx, keys)
+}
+
+func (t *MockTransaction) SDiffStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	return t.parent.SDiffStore(ctx, destination, keys)
+}
+
+// ============== Sorted Set Extensions ==============
+
+func (t *MockTransaction) ZPopMax(ctx context.Context, key string, count int64) ([]ZMember, error) {
+	return t.parent.ZPopMax(ctx, key, count)
+}
+
+func (t *MockTransaction) ZRank(ctx context.Context, key, member string) (int64, bool, error) {
+	return t.parent.ZRank(ctx, key, member)
+}
+
+func (t *MockTransaction) ZRevRank(ctx context.Context, key, member string) (int64, bool, error) {
+	return t.parent.ZRevRank(ctx, key, member)
+}
+
+func (t *MockTransaction) ZCount(ctx context.Context, key string, min, max float64) (int64, error) {
+	return t.parent.ZCount(ctx, key, min, max)
+}
+
+func (t *MockTransaction) ZScan(ctx context.Context, key string, cursor int64, pattern string, count int64) (int64, []ZMember, error) {
+	return t.parent.ZScan(ctx, key, cursor, pattern, count)
+}
+
+func (t *MockTransaction) ZUnionStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	return t.parent.ZUnionStore(ctx, destination, keys, weights, aggregate)
+}
+
+func (t *MockTransaction) ZInterStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	return t.parent.ZInterStore(ctx, destination, keys, weights, aggregate)
+}
+
+// ============== Key Extensions ==============
+
+func (t *MockTransaction) ExpireAt(ctx context.Context, key string, expireTime time.Time) (bool, error) {
+	return t.parent.ExpireAt(ctx, key, expireTime)
+}
+
+func (t *MockTransaction) Copy(ctx context.Context, source, destination string, replace bool) (bool, error) {
+	return t.parent.Copy(ctx, source, destination, replace)
+}
+
+// ============== Bitmap Commands ==============
+
+func (t *MockTransaction) SetBit(ctx context.Context, key string, offset int64, value int) (int64, error) {
+	return t.parent.SetBit(ctx, key, offset, value)
+}
+
+func (t *MockTransaction) GetBit(ctx context.Context, key string, offset int64) (int64, error) {
+	return t.parent.GetBit(ctx, key, offset)
+}
+
+func (t *MockTransaction) BitCount(ctx context.Context, key string, start, end int64, useBit bool) (int64, error) {
+	return t.parent.BitCount(ctx, key, start, end, useBit)
+}
+
+func (t *MockTransaction) BitOp(ctx context.Context, operation, destKey string, keys []string) (int64, error) {
+	return t.parent.BitOp(ctx, operation, destKey, keys)
+}
+
+func (t *MockTransaction) BitPos(ctx context.Context, key string, bit int, start, end int64, useBit bool) (int64, error) {
+	return t.parent.BitPos(ctx, key, bit, start, end, useBit)
+}
+
 // Ensure MockTransaction implements Transaction
 var _ Transaction = (*MockTransaction)(nil)

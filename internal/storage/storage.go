@@ -372,6 +372,54 @@ func (s *Store) Rename(ctx context.Context, oldKey, newKey string) error {
 	})
 }
 
+func (s *Store) ExpireAt(ctx context.Context, key string, timestamp time.Time) (bool, error) {
+	return s.ops.expireAt(ctx, s.querier(), key, timestamp)
+}
+
+func (s *Store) Copy(ctx context.Context, source, destination string, replace bool) (bool, error) {
+	var result bool
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.copyKey(ctx, s.txQuerier(tx), source, destination, replace)
+		return err
+	})
+	return result, err
+}
+
+// ============== Bitmap Commands ==============
+
+func (s *Store) SetBit(ctx context.Context, key string, offset int64, value int) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.setBit(ctx, s.txQuerier(tx), key, offset, value)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) GetBit(ctx context.Context, key string, offset int64) (int64, error) {
+	return s.ops.getBit(ctx, s.querier(), key, offset)
+}
+
+func (s *Store) BitCount(ctx context.Context, key string, start, end int64, useBit bool) (int64, error) {
+	return s.ops.bitCount(ctx, s.querier(), key, start, end, useBit)
+}
+
+func (s *Store) BitOp(ctx context.Context, operation, destKey string, keys []string) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.bitOp(ctx, s.txQuerier(tx), operation, destKey, keys)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) BitPos(ctx context.Context, key string, bit int, start, end int64, useBit bool) (int64, error) {
+	return s.ops.bitPos(ctx, s.querier(), key, bit, start, end, useBit)
+}
+
 // ============== Hash Commands ==============
 
 func (s *Store) HGet(ctx context.Context, key, field string) (string, bool, error) {
@@ -421,6 +469,26 @@ func (s *Store) HIncrBy(ctx context.Context, key, field string, increment int64)
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
 		var err error
 		result, err = s.ops.hIncrBy(ctx, s.txQuerier(tx), key, field, increment)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) HIncrByFloat(ctx context.Context, key, field string, increment float64) (float64, error) {
+	var result float64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.hIncrByFloat(ctx, s.txQuerier(tx), key, field, increment)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) HSetNX(ctx context.Context, key, field, value string) (bool, error) {
+	var result bool
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.hSetNX(ctx, s.txQuerier(tx), key, field, value)
 		return err
 	})
 	return result, err
@@ -510,6 +578,52 @@ func (s *Store) SCard(ctx context.Context, key string) (int64, error) {
 	return s.ops.sCard(ctx, s.querier(), key)
 }
 
+func (s *Store) SMIsMember(ctx context.Context, key string, members []string) ([]bool, error) {
+	return s.ops.sMIsMember(ctx, s.querier(), key, members)
+}
+
+func (s *Store) SInter(ctx context.Context, keys []string) ([]string, error) {
+	return s.ops.sInter(ctx, s.querier(), keys)
+}
+
+func (s *Store) SInterStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.sInterStore(ctx, s.txQuerier(tx), destination, keys)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) SUnion(ctx context.Context, keys []string) ([]string, error) {
+	return s.ops.sUnion(ctx, s.querier(), keys)
+}
+
+func (s *Store) SUnionStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.sUnionStore(ctx, s.txQuerier(tx), destination, keys)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) SDiff(ctx context.Context, keys []string) ([]string, error) {
+	return s.ops.sDiff(ctx, s.querier(), keys)
+}
+
+func (s *Store) SDiffStore(ctx context.Context, destination string, keys []string) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.sDiffStore(ctx, s.txQuerier(tx), destination, keys)
+		return err
+	})
+	return result, err
+}
+
 // ============== Sorted Set Commands ==============
 
 func (s *Store) ZAdd(ctx context.Context, key string, members []ZMember) (int64, error) {
@@ -570,6 +684,52 @@ func (s *Store) ZPopMin(ctx context.Context, key string, count int64) ([]ZMember
 	return result, err
 }
 
+func (s *Store) ZPopMax(ctx context.Context, key string, count int64) ([]ZMember, error) {
+	var result []ZMember
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.zPopMax(ctx, s.txQuerier(tx), key, count)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) ZRank(ctx context.Context, key, member string) (int64, bool, error) {
+	return s.ops.zRank(ctx, s.querier(), key, member)
+}
+
+func (s *Store) ZRevRank(ctx context.Context, key, member string) (int64, bool, error) {
+	return s.ops.zRevRank(ctx, s.querier(), key, member)
+}
+
+func (s *Store) ZCount(ctx context.Context, key string, min, max float64) (int64, error) {
+	return s.ops.zCount(ctx, s.querier(), key, min, max)
+}
+
+func (s *Store) ZScan(ctx context.Context, key string, cursor int64, pattern string, count int64) (int64, []ZMember, error) {
+	return s.ops.zScan(ctx, s.querier(), key, cursor, pattern, count)
+}
+
+func (s *Store) ZUnionStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.zUnionStore(ctx, s.txQuerier(tx), destination, keys, weights, aggregate)
+		return err
+	})
+	return result, err
+}
+
+func (s *Store) ZInterStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.zInterStore(ctx, s.txQuerier(tx), destination, keys, weights, aggregate)
+		return err
+	})
+	return result, err
+}
+
 func (s *Store) LRem(ctx context.Context, key string, count int64, element string) (int64, error) {
 	return s.ops.lRem(ctx, s.querier(), key, count, element)
 }
@@ -588,7 +748,25 @@ func (s *Store) RPopLPush(ctx context.Context, source, destination string) (stri
 	})
 	return result, found, err
 }
+func (s *Store) LPos(ctx context.Context, key, element string, rank, count, maxlen int64) ([]int64, error) {
+	return s.ops.lPos(ctx, s.querier(), key, element, rank, count, maxlen)
+}
 
+func (s *Store) LSet(ctx context.Context, key string, index int64, element string) error {
+	return s.withTx(ctx, func(tx pgx.Tx) error {
+		return s.ops.lSet(ctx, s.txQuerier(tx), key, index, element)
+	})
+}
+
+func (s *Store) LInsert(ctx context.Context, key, pivot, element string, before bool) (int64, error) {
+	var result int64
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		result, err = s.ops.lInsert(ctx, s.txQuerier(tx), key, pivot, element, before)
+		return err
+	})
+	return result, err
+}
 // ============== HyperLogLog Commands ==============
 
 func (s *Store) PFAdd(ctx context.Context, key string, elements []string) (int64, error) {

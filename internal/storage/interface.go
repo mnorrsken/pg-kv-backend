@@ -54,12 +54,21 @@ type Operations interface {
 	Del(ctx context.Context, keys []string) (int64, error)
 	Exists(ctx context.Context, keys []string) (int64, error)
 	Expire(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	ExpireAt(ctx context.Context, key string, timestamp time.Time) (bool, error)
 	TTL(ctx context.Context, key string) (int64, error)
 	PTTL(ctx context.Context, key string) (int64, error)
 	Persist(ctx context.Context, key string) (bool, error)
 	Keys(ctx context.Context, pattern string) ([]string, error)
 	Type(ctx context.Context, key string) (KeyType, error)
 	Rename(ctx context.Context, oldKey, newKey string) error
+	Copy(ctx context.Context, source, destination string, replace bool) (bool, error)
+
+	// Bitmap commands
+	SetBit(ctx context.Context, key string, offset int64, value int) (int64, error)
+	GetBit(ctx context.Context, key string, offset int64) (int64, error)
+	BitCount(ctx context.Context, key string, start, end int64, useBit bool) (int64, error)
+	BitOp(ctx context.Context, operation, destKey string, keys []string) (int64, error)
+	BitPos(ctx context.Context, key string, bit int, start, end int64, useBit bool) (int64, error)
 
 	// Hash commands
 	HGet(ctx context.Context, key, field string) (string, bool, error)
@@ -72,6 +81,8 @@ type Operations interface {
 	HVals(ctx context.Context, key string) ([]string, error)
 	HLen(ctx context.Context, key string) (int64, error)
 	HIncrBy(ctx context.Context, key, field string, increment int64) (int64, error)
+	HIncrByFloat(ctx context.Context, key, field string, increment float64) (float64, error)
+	HSetNX(ctx context.Context, key, field, value string) (bool, error)
 
 	// List commands
 	LPush(ctx context.Context, key string, values []string) (int64, error)
@@ -84,6 +95,9 @@ type Operations interface {
 	LRem(ctx context.Context, key string, count int64, element string) (int64, error)
 	LTrim(ctx context.Context, key string, start, stop int64) error
 	RPopLPush(ctx context.Context, source, destination string) (string, bool, error)
+	LPos(ctx context.Context, key, element string, rank, count, maxlen int64) ([]int64, error)
+	LSet(ctx context.Context, key string, index int64, element string) error
+	LInsert(ctx context.Context, key, pivot, element string, before bool) (int64, error)
 
 	// Set commands
 	SAdd(ctx context.Context, key string, members []string) (int64, error)
@@ -91,6 +105,13 @@ type Operations interface {
 	SMembers(ctx context.Context, key string) ([]string, error)
 	SIsMember(ctx context.Context, key, member string) (bool, error)
 	SCard(ctx context.Context, key string) (int64, error)
+	SMIsMember(ctx context.Context, key string, members []string) ([]bool, error)
+	SInter(ctx context.Context, keys []string) ([]string, error)
+	SInterStore(ctx context.Context, destination string, keys []string) (int64, error)
+	SUnion(ctx context.Context, keys []string) ([]string, error)
+	SUnionStore(ctx context.Context, destination string, keys []string) (int64, error)
+	SDiff(ctx context.Context, keys []string) ([]string, error)
+	SDiffStore(ctx context.Context, destination string, keys []string) (int64, error)
 
 	// Sorted set commands
 	ZAdd(ctx context.Context, key string, members []ZMember) (int64, error)
@@ -103,6 +124,13 @@ type Operations interface {
 	ZCard(ctx context.Context, key string) (int64, error)
 	ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error)
 	ZPopMin(ctx context.Context, key string, count int64) ([]ZMember, error)
+	ZPopMax(ctx context.Context, key string, count int64) ([]ZMember, error)
+	ZRank(ctx context.Context, key, member string) (int64, bool, error)
+	ZRevRank(ctx context.Context, key, member string) (int64, bool, error)
+	ZCount(ctx context.Context, key string, min, max float64) (int64, error)
+	ZScan(ctx context.Context, key string, cursor int64, pattern string, count int64) (int64, []ZMember, error)
+	ZUnionStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error)
+	ZInterStore(ctx context.Context, destination string, keys []string, weights []float64, aggregate string) (int64, error)
 
 	// HyperLogLog commands
 	PFAdd(ctx context.Context, key string, elements []string) (int64, error)
