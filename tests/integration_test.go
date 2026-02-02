@@ -4953,3 +4953,346 @@ func TestBitPos(t *testing.T) {
 		t.Errorf("Expected 8, got %d", result)
 	}
 }
+
+// ============== Additional String Command Tests ==============
+
+func TestIncrByFloat(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// INCRBYFLOAT on non-existent key
+	val, err := ts.client.IncrByFloat(ctx, "floatkey", 10.5).Result()
+	if err != nil {
+		t.Fatalf("INCRBYFLOAT failed: %v", err)
+	}
+	if val != 10.5 {
+		t.Errorf("Expected 10.5, got %f", val)
+	}
+
+	// INCRBYFLOAT again
+	val, err = ts.client.IncrByFloat(ctx, "floatkey", 0.1).Result()
+	if err != nil {
+		t.Fatalf("INCRBYFLOAT failed: %v", err)
+	}
+	if val != 10.6 {
+		t.Errorf("Expected 10.6, got %f", val)
+	}
+
+	// INCRBYFLOAT with negative
+	val, err = ts.client.IncrByFloat(ctx, "floatkey", -5.6).Result()
+	if err != nil {
+		t.Fatalf("INCRBYFLOAT failed: %v", err)
+	}
+	if val != 5.0 {
+		t.Errorf("Expected 5.0, got %f", val)
+	}
+}
+
+func TestGetRangeSetRange(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	ts.client.Set(ctx, "rangekey", "Hello World", 0)
+
+	// GETRANGE
+	val, err := ts.client.GetRange(ctx, "rangekey", 0, 4).Result()
+	if err != nil {
+		t.Fatalf("GETRANGE failed: %v", err)
+	}
+	if val != "Hello" {
+		t.Errorf("Expected 'Hello', got '%s'", val)
+	}
+
+	// GETRANGE with negative indices
+	val, err = ts.client.GetRange(ctx, "rangekey", -5, -1).Result()
+	if err != nil {
+		t.Fatalf("GETRANGE failed: %v", err)
+	}
+	if val != "World" {
+		t.Errorf("Expected 'World', got '%s'", val)
+	}
+
+	// SETRANGE
+	length, err := ts.client.SetRange(ctx, "rangekey", 6, "Redis").Result()
+	if err != nil {
+		t.Fatalf("SETRANGE failed: %v", err)
+	}
+	if length != 11 {
+		t.Errorf("Expected length 11, got %d", length)
+	}
+
+	// Verify the change
+	val, _ = ts.client.Get(ctx, "rangekey").Result()
+	if val != "Hello Redis" {
+		t.Errorf("Expected 'Hello Redis', got '%s'", val)
+	}
+
+	// SETRANGE beyond string length (should pad with zeros)
+	length, err = ts.client.SetRange(ctx, "padkey", 5, "Hello").Result()
+	if err != nil {
+		t.Fatalf("SETRANGE failed: %v", err)
+	}
+	if length != 10 {
+		t.Errorf("Expected length 10, got %d", length)
+	}
+}
+
+func TestStrLen(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	ts.client.Set(ctx, "strlenkey", "Hello World", 0)
+
+	// STRLEN
+	length, err := ts.client.StrLen(ctx, "strlenkey").Result()
+	if err != nil {
+		t.Fatalf("STRLEN failed: %v", err)
+	}
+	if length != 11 {
+		t.Errorf("Expected 11, got %d", length)
+	}
+
+	// STRLEN on non-existent key
+	length, err = ts.client.StrLen(ctx, "nonexistent").Result()
+	if err != nil {
+		t.Fatalf("STRLEN failed: %v", err)
+	}
+	if length != 0 {
+		t.Errorf("Expected 0 for non-existent key, got %d", length)
+	}
+}
+
+func TestPExpirePTTL(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	ts.client.Set(ctx, "pexpirekey", "value", 0)
+
+	// PTTL on key without expiry returns -1
+	pttl, err := ts.client.PTTL(ctx, "pexpirekey").Result()
+	if err != nil {
+		t.Fatalf("PTTL failed: %v", err)
+	}
+	if pttl >= 0 {
+		t.Errorf("Expected negative PTTL for key without expiry, got %v", pttl)
+	}
+
+	// PEXPIRE (set 5000ms expiry)
+	ok, err := ts.client.PExpire(ctx, "pexpirekey", 5000*time.Millisecond).Result()
+	if err != nil {
+		t.Fatalf("PEXPIRE failed: %v", err)
+	}
+	if !ok {
+		t.Error("Expected PEXPIRE to return true")
+	}
+
+	// PTTL should now be positive and close to 5000ms
+	pttl, _ = ts.client.PTTL(ctx, "pexpirekey").Result()
+	if pttl <= 0 || pttl > 5000*time.Millisecond {
+		t.Errorf("Expected PTTL between 0 and 5000ms, got %v", pttl)
+	}
+
+	// PTTL on non-existent key returns -2 (go-redis converts to -2*time.Nanosecond or similar)
+	pttl, err = ts.client.PTTL(ctx, "nonexistent").Result()
+	if err != nil {
+		t.Fatalf("PTTL failed: %v", err)
+	}
+	// go-redis returns negative value for non-existent keys
+	if pttl >= 0 {
+		t.Errorf("Expected negative PTTL for non-existent key, got %v", pttl)
+	}
+}
+
+func TestGetEx(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	ts.client.Set(ctx, "getexkey", "value", 0)
+
+	// GETEX with EXAT option using raw command (go-redis GetEx has limited options)
+	val, err := ts.client.Do(ctx, "GETEX", "getexkey", "EX", "10").Text()
+	if err != nil {
+		t.Fatalf("GETEX EX failed: %v", err)
+	}
+	if val != "value" {
+		t.Errorf("Expected 'value', got '%s'", val)
+	}
+
+	// Verify TTL was set
+	ttl, _ := ts.client.TTL(ctx, "getexkey").Result()
+	if ttl <= 0 || ttl > 10*time.Second {
+		t.Errorf("Expected TTL between 0 and 10s, got %v", ttl)
+	}
+
+	// GETEX with PERSIST option
+	ts.client.Set(ctx, "getexkey2", "value2", 10*time.Second)
+	val, err = ts.client.Do(ctx, "GETEX", "getexkey2", "PERSIST").Text()
+	if err != nil {
+		t.Fatalf("GETEX PERSIST failed: %v", err)
+	}
+	if val != "value2" {
+		t.Errorf("Expected 'value2', got '%s'", val)
+	}
+
+	// Verify TTL was removed
+	ttl, _ = ts.client.TTL(ctx, "getexkey2").Result()
+	if ttl >= 0 {
+		t.Errorf("Expected negative TTL after PERSIST, got %v", ttl)
+	}
+
+	// GETEX on non-existent key
+	result := ts.client.Do(ctx, "GETEX", "nonexistent")
+	if result.Err() != nil && result.Err() != redis.Nil {
+		t.Fatalf("GETEX on non-existent key failed: %v", result.Err())
+	}
+	// Check for nil response
+	val, err = result.Text()
+	if err != redis.Nil {
+		t.Errorf("Expected redis.Nil for non-existent key, got val='%s', err=%v", val, err)
+	}
+}
+
+func TestGetDel(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	ts.client.Set(ctx, "getdelkey", "value", 0)
+
+	// GETDEL
+	val, err := ts.client.GetDel(ctx, "getdelkey").Result()
+	if err != nil {
+		t.Fatalf("GETDEL failed: %v", err)
+	}
+	if val != "value" {
+		t.Errorf("Expected 'value', got '%s'", val)
+	}
+
+	// Key should no longer exist
+	exists, _ := ts.client.Exists(ctx, "getdelkey").Result()
+	if exists != 0 {
+		t.Error("Key should not exist after GETDEL")
+	}
+
+	// GETDEL on non-existent key
+	_, err = ts.client.GetDel(ctx, "nonexistent").Result()
+	if err != redis.Nil {
+		t.Errorf("Expected redis.Nil for non-existent key, got %v", err)
+	}
+}
+
+func TestBitField(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// SET operation
+	results, err := ts.client.BitField(ctx, "bfkey", "SET", "u8", "0", "200").Result()
+	if err != nil {
+		t.Fatalf("BITFIELD SET failed: %v", err)
+	}
+	if len(results) != 1 || results[0] != 0 {
+		t.Errorf("Expected [0], got %v", results)
+	}
+
+	// GET operation
+	results, err = ts.client.BitField(ctx, "bfkey", "GET", "u8", "0").Result()
+	if err != nil {
+		t.Fatalf("BITFIELD GET failed: %v", err)
+	}
+	if len(results) != 1 || results[0] != 200 {
+		t.Errorf("Expected [200], got %v", results)
+	}
+
+	// INCRBY operation
+	results, err = ts.client.BitField(ctx, "bfkey", "INCRBY", "u8", "0", "10").Result()
+	if err != nil {
+		t.Fatalf("BITFIELD INCRBY failed: %v", err)
+	}
+	if len(results) != 1 || results[0] != 210 {
+		t.Errorf("Expected [210], got %v", results)
+	}
+
+	// Multiple operations in one call
+	results, err = ts.client.BitField(ctx, "bfkey2",
+		"SET", "u8", "0", "100",
+		"GET", "u8", "0",
+		"INCRBY", "u8", "0", "1",
+	).Result()
+	if err != nil {
+		t.Fatalf("BITFIELD multiple ops failed: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("Expected 3 results, got %d", len(results))
+	}
+	// SET returns old value (0), GET returns 100, INCRBY returns 101
+	if results[0] != 0 || results[1] != 100 || results[2] != 101 {
+		t.Errorf("Expected [0, 100, 101], got %v", results)
+	}
+}
+
+func TestEcho(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// ECHO
+	val, err := ts.client.Echo(ctx, "Hello World").Result()
+	if err != nil {
+		t.Fatalf("ECHO failed: %v", err)
+	}
+	if val != "Hello World" {
+		t.Errorf("Expected 'Hello World', got '%s'", val)
+	}
+}
+
+func TestScriptFlush(t *testing.T) {
+	ts := newTestServer(t, "")
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	// Load a script
+	sha, err := ts.client.ScriptLoad(ctx, "return 1").Result()
+	if err != nil {
+		t.Fatalf("SCRIPT LOAD failed: %v", err)
+	}
+
+	// Verify it exists
+	exists, err := ts.client.ScriptExists(ctx, sha).Result()
+	if err != nil {
+		t.Fatalf("SCRIPT EXISTS failed: %v", err)
+	}
+	if !exists[0] {
+		t.Error("Script should exist after SCRIPT LOAD")
+	}
+
+	// SCRIPT FLUSH
+	err = ts.client.ScriptFlush(ctx).Err()
+	if err != nil {
+		t.Fatalf("SCRIPT FLUSH failed: %v", err)
+	}
+
+	// Verify script no longer exists
+	exists, err = ts.client.ScriptExists(ctx, sha).Result()
+	if err != nil {
+		t.Fatalf("SCRIPT EXISTS failed: %v", err)
+	}
+	if exists[0] {
+		t.Error("Script should not exist after SCRIPT FLUSH")
+	}
+}
+

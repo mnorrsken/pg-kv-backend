@@ -590,20 +590,32 @@ func (o queryOps) getEx(ctx context.Context, q Querier, key string, ttl time.Dur
 		return "", false, err
 	}
 
-	// Update expiration based on options
+	// Update expiration based on options - update kv_meta for TTL tracking
 	if persist {
-		// Remove expiration
+		// Remove expiration from both tables
 		_, err = q.Exec(ctx,
-			"UPDATE kv_strings SET expires_at = NULL WHERE key = $1",
+			"UPDATE kv_meta SET expires_at = NULL WHERE key = $1",
 			key,
 		)
+		if err == nil {
+			_, err = q.Exec(ctx,
+				"UPDATE kv_strings SET expires_at = NULL WHERE key = $1",
+				key,
+			)
+		}
 	} else if ttl > 0 {
-		// Set new expiration
+		// Set new expiration on both tables
 		newExpiry := time.Now().Add(ttl)
 		_, err = q.Exec(ctx,
-			"UPDATE kv_strings SET expires_at = $2 WHERE key = $1",
+			"UPDATE kv_meta SET expires_at = $2 WHERE key = $1",
 			key, newExpiry,
 		)
+		if err == nil {
+			_, err = q.Exec(ctx,
+				"UPDATE kv_strings SET expires_at = $2 WHERE key = $1",
+				key, newExpiry,
+			)
+		}
 	}
 	if err != nil {
 		return "", false, err

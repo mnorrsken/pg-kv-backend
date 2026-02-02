@@ -21,6 +21,14 @@ All notable changes to this project will be documented in this file.
 
 ### Improved
 - **Exponential backoff for LISTEN loops**: Pub/sub and list notifier now use exponential backoff (50ms-2s) instead of fixed 100ms polling, reducing CPU usage when idle
+- **Test coverage**: Added integration tests for previously untested commands:
+  - String commands: INCRBYFLOAT, GETRANGE, SETRANGE, STRLEN, GETEX, GETDEL, BITFIELD
+  - Key commands: PEXPIRE, PTTL
+  - Connection commands: ECHO
+  - Scripting commands: SCRIPT FLUSH
+
+### Fixed
+- **GETEX expiration**: Fixed bug where GETEX was not updating TTL correctly (was updating wrong table)
 
 ## [0.16] - 2026-02-02
 
