@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15] - 2026-02-02
+
+### Changed
+- **Test infrastructure overhaul**: All integration tests now run against real PostgreSQL
+  - Removed in-memory mock storage (~2,000 lines of code removed)
+  - Tests now validate actual PostgreSQL behavior and SQL queries
+  - Single `make test` command starts PostgreSQL and runs all tests
+- Simplified Makefile with consolidated test/bench targets
+
+### Fixed
+- **ZINCRBY**: Fixed incorrect column name in kv_meta insert
+- **LINSERT**: Fixed element ordering for BEFORE/AFTER insertion
+- **WRONGTYPE errors**: Added proper type checking to read operations
+  - HGETALL now returns WRONGTYPE when key is not a hash
+  - LLEN/LRANGE now return WRONGTYPE when key is not a list
+  - SMEMBERS/SCARD now return WRONGTYPE when key is not a set
+
+### Removed
+- Mock storage implementation (mock.go, mock_transaction.go)
+- Separate mock vs PostgreSQL test targets
+
 ## [0.14] - 2026-02-02
 
 ### Added

@@ -954,6 +954,15 @@ func (o queryOps) hDel(ctx context.Context, q Querier, key string, fields []stri
 }
 
 func (o queryOps) hGetAll(ctx context.Context, q Querier, key string) (map[string]string, error) {
+	// Check if key exists but is wrong type
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return nil, err
+	}
+	if keyType != TypeNone && keyType != TypeHash {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	rows, err := q.Query(ctx,
 		"SELECT field, value FROM kv_hashes WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
 		key,
@@ -1364,8 +1373,17 @@ func (o queryOps) rPop(ctx context.Context, q Querier, key string) (string, bool
 }
 
 func (o queryOps) lLen(ctx context.Context, q Querier, key string) (int64, error) {
+	// Check if key exists but is wrong type
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return 0, err
+	}
+	if keyType != TypeNone && keyType != TypeList {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	var count int64
-	err := q.QueryRow(ctx,
+	err = q.QueryRow(ctx,
 		"SELECT COUNT(*) FROM kv_lists WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
 		key,
 	).Scan(&count)
@@ -1373,6 +1391,15 @@ func (o queryOps) lLen(ctx context.Context, q Querier, key string) (int64, error
 }
 
 func (o queryOps) lRange(ctx context.Context, q Querier, key string, start, stop int64) ([]string, error) {
+	// Check if key exists but is wrong type
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return nil, err
+	}
+	if keyType != TypeNone && keyType != TypeList {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	// Get total count
 	var total int64
 	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM kv_lists WHERE key = $1", key).Scan(&total); err != nil {
@@ -1496,6 +1523,15 @@ func (o queryOps) sRem(ctx context.Context, q Querier, key string, members []str
 }
 
 func (o queryOps) sMembers(ctx context.Context, q Querier, key string) ([]string, error) {
+	// Check if key exists but is wrong type
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return nil, err
+	}
+	if keyType != TypeNone && keyType != TypeSet {
+		return nil, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	rows, err := q.Query(ctx,
 		"SELECT member FROM kv_sets WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
 		key,
@@ -1527,8 +1563,17 @@ func (o queryOps) sIsMember(ctx context.Context, q Querier, key, member string) 
 }
 
 func (o queryOps) sCard(ctx context.Context, q Querier, key string) (int64, error) {
+	// Check if key exists but is wrong type
+	keyType, err := o.getKeyType(ctx, q, key)
+	if err != nil {
+		return 0, err
+	}
+	if keyType != TypeNone && keyType != TypeSet {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
 	var count int64
-	err := q.QueryRow(ctx,
+	err = q.QueryRow(ctx,
 		"SELECT COUNT(*) FROM kv_sets WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
 		key,
 	).Scan(&count)
@@ -1760,7 +1805,7 @@ func (o queryOps) zRemRangeByRank(ctx context.Context, q Querier, key string, st
 func (o queryOps) zIncrBy(ctx context.Context, q Querier, key string, increment float64, member string) (float64, error) {
 	// Ensure meta entry exists
 	_, err := q.Exec(ctx,
-		`INSERT INTO kv_meta (key, type) VALUES ($1, 'zset') ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO kv_meta (key, key_type) VALUES ($1, 'zset') ON CONFLICT (key) DO NOTHING`,
 		key,
 	)
 	if err != nil {
@@ -2079,45 +2124,40 @@ func (o queryOps) lInsert(ctx context.Context, q Querier, key, pivot, element st
 		return 0, err
 	}
 
-	var newIdx int64
+	// Calculate insertion index - shift elements to make room
 	if before {
-		// Insert before: find a gap or shift
-		newIdx = pivotIdx - 1
-	} else {
-		// Insert after
-		newIdx = pivotIdx + 1
-	}
-
-	// Insert the new element
-	_, err = q.Exec(ctx,
-		"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
-		key, newIdx, []byte(element),
-	)
-	if err != nil {
-		// Conflict - need to reindex
-		// Shift all elements to make room
-		if before {
-			_, err = q.Exec(ctx,
-				"UPDATE kv_lists SET idx = idx - 1 WHERE key = $1 AND idx < $2",
-				key, pivotIdx,
-			)
-		} else {
-			_, err = q.Exec(ctx,
-				"UPDATE kv_lists SET idx = idx + 1 WHERE key = $1 AND idx > $2",
-				key, pivotIdx,
-			)
-		}
-		if err != nil {
-			return 0, err
-		}
-		// Retry insert
+		// BEFORE: Insert before the pivot
+		// Shift pivot and all elements after it UP by 1 to make room
 		_, err = q.Exec(ctx,
-			"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
-			key, newIdx, []byte(element),
+			"UPDATE kv_lists SET idx = idx + 1 WHERE key = $1 AND idx >= $2",
+			key, pivotIdx,
 		)
 		if err != nil {
 			return 0, err
 		}
+		// Insert at the original pivot position (pivot has moved up)
+		_, err = q.Exec(ctx,
+			"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
+			key, pivotIdx, []byte(element),
+		)
+	} else {
+		// AFTER: Insert after the pivot
+		// Shift all elements after pivot UP by 1 to make room
+		_, err = q.Exec(ctx,
+			"UPDATE kv_lists SET idx = idx + 1 WHERE key = $1 AND idx > $2",
+			key, pivotIdx,
+		)
+		if err != nil {
+			return 0, err
+		}
+		// Insert right after the pivot
+		_, err = q.Exec(ctx,
+			"INSERT INTO kv_lists (key, idx, value) VALUES ($1, $2, $3)",
+			key, pivotIdx+1, []byte(element),
+		)
+	}
+	if err != nil {
+		return 0, err
 	}
 
 	// Return new length
