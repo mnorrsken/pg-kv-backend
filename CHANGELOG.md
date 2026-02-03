@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.2] - 2026-02-03
+
+### Fixed
+- **PostgreSQL deadlock in BRPOP/BLPOP/RPOPLPUSH**: Fixed deadlock errors (SQLSTATE 40P01) when multiple clients concurrently pop from the same list. Now uses `FOR UPDATE SKIP LOCKED` to prevent concurrent transactions from contending for the same row.
+
 ## [0.17] - 2026-02-02
 
 ### Added

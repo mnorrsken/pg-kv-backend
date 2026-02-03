@@ -1419,12 +1419,13 @@ func (o queryOps) rPush(ctx context.Context, q Querier, key string, values []str
 
 func (o queryOps) lPop(ctx context.Context, q Querier, key string) (string, bool, error) {
 	// Find and delete the leftmost element in a single query using CTE
+	// Use FOR UPDATE SKIP LOCKED to prevent deadlocks when multiple clients pop concurrently
 	var value []byte
 	err := q.QueryRow(ctx,
 		`WITH deleted AS (
 			DELETE FROM kv_lists
 			WHERE key = $1 AND idx = (
-				SELECT idx FROM kv_lists WHERE key = $1 ORDER BY idx ASC LIMIT 1
+				SELECT idx FROM kv_lists WHERE key = $1 ORDER BY idx ASC LIMIT 1 FOR UPDATE SKIP LOCKED
 			)
 			RETURNING value
 		)
@@ -1444,12 +1445,13 @@ func (o queryOps) lPop(ctx context.Context, q Querier, key string) (string, bool
 
 func (o queryOps) rPop(ctx context.Context, q Querier, key string) (string, bool, error) {
 	// Find and delete the rightmost element in a single query using CTE
+	// Use FOR UPDATE SKIP LOCKED to prevent deadlocks when multiple clients pop concurrently
 	var value []byte
 	err := q.QueryRow(ctx,
 		`WITH deleted AS (
 			DELETE FROM kv_lists
 			WHERE key = $1 AND idx = (
-				SELECT idx FROM kv_lists WHERE key = $1 ORDER BY idx DESC LIMIT 1
+				SELECT idx FROM kv_lists WHERE key = $1 ORDER BY idx DESC LIMIT 1 FOR UPDATE SKIP LOCKED
 			)
 			RETURNING value
 		)
@@ -2022,6 +2024,7 @@ func (o queryOps) lRem(ctx context.Context, q Querier, key string, count int64, 
 
 func (o queryOps) rPopLPush(ctx context.Context, q Querier, source, destination string) (string, bool, error) {
 	// Pop from source (right)
+	// Use FOR UPDATE SKIP LOCKED to prevent deadlocks when multiple clients pop concurrently
 	var value []byte
 	var idx int64
 
@@ -2029,7 +2032,7 @@ func (o queryOps) rPopLPush(ctx context.Context, q Querier, source, destination 
 		`SELECT value, idx FROM kv_lists 
 		 WHERE key = $1 
 		 ORDER BY idx DESC 
-		 LIMIT 1 FOR UPDATE`,
+		 LIMIT 1 FOR UPDATE SKIP LOCKED`,
 		source,
 	).Scan(&value, &idx)
 
