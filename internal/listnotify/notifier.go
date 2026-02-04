@@ -18,8 +18,8 @@ const listPushChannel = "postkeys_list_push"
 
 // Notifier manages notifications for blocking list operations
 type Notifier struct {
-	pool     *pgxpool.Pool
-	connStr  string
+	pool    *pgxpool.Pool
+	connStr string
 
 	// Listener connection
 	listenerConn *pgx.Conn
