@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.1] - 2026-02-04
+
+### Fixed
+- **Pub/sub and list notifier timeout detection**: Fixed false reconnection attempts caused by wrapped timeout errors from pgx. The `isTimeoutError` function now properly handles wrapped errors using `errors.Is()` and string matching, preventing unnecessary "will reconnect" log spam during normal operation.
+
 ## [0.18.0] - 2026-02-04
 
 ### Added

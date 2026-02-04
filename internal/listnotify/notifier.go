@@ -4,8 +4,10 @@ package listnotify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -273,5 +275,14 @@ func (n *Notifier) reconnect() bool {
 
 // isTimeoutError checks if an error is a context deadline exceeded (timeout)
 func isTimeoutError(err error) bool {
-	return err == context.DeadlineExceeded || (err != nil && err.Error() == "context deadline exceeded")
+	if err == nil {
+		return false
+	}
+	// Use errors.Is to handle wrapped errors (pgx wraps timeouts)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// Also check error string for wrapped timeout messages from pgx
+	errStr := err.Error()
+	return strings.Contains(errStr, "context deadline exceeded")
 }
