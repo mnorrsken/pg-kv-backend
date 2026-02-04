@@ -162,6 +162,13 @@ func (n *Notifier) listenLoop() {
 	)
 	currentTimeout := minTimeout
 
+	// Backoff for reconnection attempts
+	const (
+		minReconnectBackoff = 100 * time.Millisecond
+		maxReconnectBackoff = 30 * time.Second
+	)
+	reconnectBackoff := minReconnectBackoff
+
 	for {
 		select {
 		case <-n.ctx.Done():
@@ -178,6 +185,26 @@ func (n *Notifier) listenLoop() {
 			if n.ctx.Err() != nil {
 				return
 			}
+			// Check if this is a connection error (not just timeout)
+			if !isTimeoutError(err) {
+				log.Printf("List notifier listener error (will reconnect): %v", err)
+				if n.reconnect() {
+					reconnectBackoff = minReconnectBackoff // Reset backoff on successful reconnect
+					currentTimeout = minTimeout
+				} else {
+					// Exponential backoff on failed reconnect
+					select {
+					case <-time.After(reconnectBackoff):
+					case <-n.ctx.Done():
+						return
+					}
+					reconnectBackoff *= 2
+					if reconnectBackoff > maxReconnectBackoff {
+						reconnectBackoff = maxReconnectBackoff
+					}
+				}
+				continue
+			}
 			// Timeout - increase backoff (up to max)
 			if currentTimeout < maxTimeout {
 				currentTimeout *= 2
@@ -188,8 +215,9 @@ func (n *Notifier) listenLoop() {
 			continue
 		}
 
-		// Got a notification - reset backoff to minimum for responsiveness
+		// Got a notification - reset backoffs to minimum for responsiveness
 		currentTimeout = minTimeout
+		reconnectBackoff = minReconnectBackoff
 
 		key := notification.Payload
 		if n.debug {
@@ -209,4 +237,41 @@ func (n *Notifier) listenLoop() {
 			}
 		}
 	}
+}
+
+// reconnect attempts to re-establish the listener connection
+func (n *Notifier) reconnect() bool {
+	// Close old connection if it exists
+	if n.listenerConn != nil {
+		n.listenerConn.Close(context.Background())
+		n.listenerConn = nil
+	}
+
+	ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+	defer cancel()
+
+	conn, err := pgx.Connect(ctx, n.connStr)
+	if err != nil {
+		log.Printf("List notifier reconnect failed: %v", err)
+		return false
+	}
+
+	// Re-subscribe to the channel
+	_, err = conn.Exec(ctx, fmt.Sprintf("LISTEN %s", listPushChannel))
+	if err != nil {
+		conn.Close(ctx)
+		log.Printf("List notifier LISTEN failed after reconnect: %v", err)
+		return false
+	}
+
+	n.listenerConn = conn
+	if n.debug {
+		log.Printf("[DEBUG] List notifier reconnected successfully")
+	}
+	return true
+}
+
+// isTimeoutError checks if an error is a context deadline exceeded (timeout)
+func isTimeoutError(err error) bool {
+	return err == context.DeadlineExceeded || (err != nil && err.Error() == "context deadline exceeded")
 }

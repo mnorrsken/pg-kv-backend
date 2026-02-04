@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.3] - 2026-02-04
+
+### Fixed
+- **Critical: PostgreSQL listener reconnection on connection loss**: Fixed high CPU usage (spinning tight loop) when PostgreSQL LISTEN connections are lost unexpectedly (e.g., during CNI/network disruptions). All three listener loops (cache invalidator, pub/sub hub, list notifier) now properly detect connection errors vs timeouts, automatically reconnect with exponential backoff (100ms to 30s), and re-subscribe to all channels. Previously, a lost connection would cause the listener loops to spin at 100% CPU without any backoff or reconnection attempt.
+
 ## [0.17.2] - 2026-02-03
 
 ### Fixed

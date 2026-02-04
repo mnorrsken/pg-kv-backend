@@ -485,6 +485,13 @@ func (h *Hub) listenLoop() {
 	)
 	currentTimeout := minTimeout
 
+	// Backoff for reconnection attempts
+	const (
+		minReconnectBackoff = 100 * time.Millisecond
+		maxReconnectBackoff = 30 * time.Second
+	)
+	reconnectBackoff := minReconnectBackoff
+
 	for {
 		select {
 		case <-h.ctx.Done():
@@ -503,6 +510,26 @@ func (h *Hub) listenLoop() {
 		if err != nil {
 			if h.ctx.Err() != nil {
 				return // Context cancelled, clean shutdown
+			}
+			// Check if this is a connection error (not just timeout)
+			if !isTimeoutError(err) {
+				log.Printf("Pub/sub listener error (will reconnect): %v", err)
+				if h.reconnect() {
+					reconnectBackoff = minReconnectBackoff // Reset backoff on successful reconnect
+					currentTimeout = minTimeout
+				} else {
+					// Exponential backoff on failed reconnect
+					select {
+					case <-time.After(reconnectBackoff):
+					case <-h.ctx.Done():
+						return
+					}
+					reconnectBackoff *= 2
+					if reconnectBackoff > maxReconnectBackoff {
+						reconnectBackoff = maxReconnectBackoff
+					}
+				}
+				continue
 			}
 			// Timeout - increase backoff (up to max)
 			if currentTimeout < maxTimeout {
@@ -555,6 +582,51 @@ func (h *Hub) listenLoop() {
 		// Deliver to pattern subscribers
 		h.deliverToPatterns(redisChannel, payload)
 	}
+}
+
+// reconnect attempts to re-establish the listener connection and re-subscribe to all channels
+func (h *Hub) reconnect() bool {
+	// Close old connection if it exists
+	if h.listenerConn != nil {
+		h.listenerConn.Close(context.Background())
+		h.listenerConn = nil
+	}
+
+	ctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
+	defer cancel()
+
+	conn, err := pgx.Connect(ctx, h.connStr)
+	if err != nil {
+		log.Printf("Pub/sub hub reconnect failed: %v", err)
+		return false
+	}
+	h.listenerConn = conn
+
+	// Re-subscribe to all channels we were listening to
+	h.listenerMu.Lock()
+	channels := make([]string, 0, len(h.listening))
+	for ch := range h.listening {
+		channels = append(channels, ch)
+	}
+	h.listenerMu.Unlock()
+
+	for _, ch := range channels {
+		_, err := conn.Exec(ctx, fmt.Sprintf("LISTEN %s", pgxIdentifier(ch)))
+		if err != nil {
+			log.Printf("Failed to re-LISTEN on channel %s after reconnect: %v", ch, err)
+			// Don't fail entirely - continue with other channels
+		}
+	}
+
+	if h.debug {
+		log.Printf("[DEBUG] Pub/sub hub reconnected successfully, re-subscribed to %d channels", len(channels))
+	}
+	return true
+}
+
+// isTimeoutError checks if an error is a context deadline exceeded (timeout)
+func isTimeoutError(err error) bool {
+	return err == context.DeadlineExceeded || (err != nil && err.Error() == "context deadline exceeded")
 }
 
 // deliverToChannel delivers a message to all subscribers of a channel

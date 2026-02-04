@@ -140,6 +140,13 @@ func (inv *Invalidator) InvalidateFlush(ctx context.Context) error {
 func (inv *Invalidator) listenLoop() {
 	defer inv.wg.Done()
 
+	// Backoff for reconnection attempts
+	const (
+		minBackoff = 100 * time.Millisecond
+		maxBackoff = 30 * time.Second
+	)
+	backoff := minBackoff
+
 	for {
 		select {
 		case <-inv.ctx.Done():
@@ -156,12 +163,70 @@ func (inv *Invalidator) listenLoop() {
 			if inv.ctx.Err() != nil {
 				return
 			}
+			// Check if this is a connection error (not just timeout)
+			if !isTimeoutError(err) {
+				log.Printf("Cache invalidator listener error (will reconnect): %v", err)
+				if inv.reconnect() {
+					backoff = minBackoff // Reset backoff on successful reconnect
+				} else {
+					// Exponential backoff on failed reconnect
+					select {
+					case <-time.After(backoff):
+					case <-inv.ctx.Done():
+						return
+					}
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+				}
+			}
 			continue
 		}
+
+		// Got a notification - reset backoff
+		backoff = minBackoff
 
 		// Process the invalidation
 		inv.processNotification(notification.Payload)
 	}
+}
+
+// reconnect attempts to re-establish the listener connection
+func (inv *Invalidator) reconnect() bool {
+	// Close old connection if it exists
+	if inv.listenerConn != nil {
+		inv.listenerConn.Close(context.Background())
+		inv.listenerConn = nil
+	}
+
+	ctx, cancel := context.WithTimeout(inv.ctx, 10*time.Second)
+	defer cancel()
+
+	conn, err := pgx.Connect(ctx, inv.connStr)
+	if err != nil {
+		log.Printf("Cache invalidator reconnect failed: %v", err)
+		return false
+	}
+
+	// Re-subscribe to the channel
+	_, err = conn.Exec(ctx, fmt.Sprintf("LISTEN %s", cacheInvalidateChannel))
+	if err != nil {
+		conn.Close(ctx)
+		log.Printf("Cache invalidator LISTEN failed after reconnect: %v", err)
+		return false
+	}
+
+	inv.listenerConn = conn
+	if inv.debug {
+		log.Printf("[DEBUG] Cache invalidator reconnected successfully")
+	}
+	return true
+}
+
+// isTimeoutError checks if an error is a context deadline exceeded (timeout)
+func isTimeoutError(err error) bool {
+	return err == context.DeadlineExceeded || (err != nil && err.Error() == "context deadline exceeded")
 }
 
 // processNotification handles an incoming invalidation notification
