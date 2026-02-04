@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.0] - 2026-02-04
+
+### Added
+- **Smart cache policy**: Intelligent caching that avoids caching "hot" keys for mixed workloads (caching + messaging/pubsub)
+  - **TTL-based filtering** (`CACHE_MIN_TTL`): Keys with short TTL (e.g., < 1 second) are considered transient and skip the cache
+  - **Write frequency tracking** (`CACHE_MAX_WRITE_FREQ`): Keys written frequently (> N writes/sec) are detected as "hot" and excluded from cache
+  - **Pattern matching** (`CACHE_EXCLUDE_PATTERNS`, `CACHE_INCLUDE_PATTERNS`): Explicit include/exclude patterns for known key prefixes
+  - New Prometheus metrics: `postkeys_cache_skips_total{reason}` for monitoring policy decisions
+  - Helm chart: `cache.smartPolicy.*` configuration options
+  - Ideal for applications using Redis as both a cache AND a message bus
+
 ## [0.17.3] - 2026-02-04
 
 ### Fixed

@@ -13,6 +13,8 @@ type CachedStore struct {
 	backend     storage.Backend
 	cache       *Cache
 	invalidator *Invalidator
+	policy      *Policy       // optional smart caching policy
+	ttlCache    *Cache        // tracks TTL for keys (if policy enabled)
 }
 
 // NewCachedStore creates a new cached storage wrapper
@@ -21,6 +23,21 @@ func NewCachedStore(backend storage.Backend, cfg Config) *CachedStore {
 		backend: backend,
 		cache:   New(cfg),
 	}
+}
+
+// NewCachedStoreWithPolicy creates a cached storage wrapper with smart policy
+func NewCachedStoreWithPolicy(backend storage.Backend, cfg Config, policyCfg PolicyConfig) *CachedStore {
+	cs := &CachedStore{
+		backend: backend,
+		cache:   New(cfg),
+		policy:  NewPolicy(policyCfg),
+	}
+	// Use a separate cache to track TTL metadata (longer lived)
+	cs.ttlCache = New(Config{
+		TTL:     30 * time.Second,
+		MaxSize: cfg.MaxSize,
+	})
+	return cs
 }
 
 // SetInvalidator sets the distributed cache invalidator
@@ -36,7 +53,47 @@ func (s *CachedStore) GetCache() *Cache {
 // Close closes the cached store and underlying backend
 func (s *CachedStore) Close() {
 	s.cache.Stop()
+	if s.ttlCache != nil {
+		s.ttlCache.Stop()
+	}
 	s.backend.Close()
+}
+
+// shouldCache checks if a key should be cached based on policy
+// Returns true if no policy is set, or if policy allows caching
+func (s *CachedStore) shouldCache(key string) bool {
+	if s.policy == nil {
+		return true
+	}
+
+	// Get stored TTL for this key (if known)
+	var ttl time.Duration
+	if s.ttlCache != nil {
+		if ttlStr, found := s.ttlCache.Get(key); found {
+			if d, err := time.ParseDuration(ttlStr); err == nil {
+				ttl = d
+			}
+		}
+	}
+
+	decision := s.policy.ShouldCache(key, ttl)
+	if !decision.ShouldCache {
+		metrics.CacheSkips.WithLabelValues(decision.Reason).Inc()
+	}
+	return decision.ShouldCache
+}
+
+// recordWrite records a write operation for policy tracking
+func (s *CachedStore) recordWrite(key string, ttl time.Duration) {
+	if s.policy == nil {
+		return
+	}
+	s.policy.RecordWrite(key)
+
+	// Store TTL metadata for future cache decisions
+	if s.ttlCache != nil && ttl > 0 {
+		s.ttlCache.Set(key, ttl.String())
+	}
 }
 
 // invalidate invalidates a key locally and broadcasts to other instances
@@ -66,10 +123,13 @@ func (s *CachedStore) flush(ctx context.Context) {
 // ============== String Commands (with caching) ==============
 
 func (s *CachedStore) Get(ctx context.Context, key string) (string, bool, error) {
-	// Try cache first
-	if value, found := s.cache.Get(key); found {
-		metrics.CacheHits.Inc()
-		return value, true, nil
+	// Check policy before using cache
+	if s.shouldCache(key) {
+		// Try cache first
+		if value, found := s.cache.Get(key); found {
+			metrics.CacheHits.Inc()
+			return value, true, nil
+		}
 	}
 	metrics.CacheMisses.Inc()
 
@@ -79,8 +139,8 @@ func (s *CachedStore) Get(ctx context.Context, key string) (string, bool, error)
 		return "", false, err
 	}
 
-	// Cache the result if found
-	if found {
+	// Cache the result if found and policy allows
+	if found && s.shouldCache(key) {
 		s.cache.Set(key, value)
 	}
 
@@ -88,6 +148,9 @@ func (s *CachedStore) Get(ctx context.Context, key string) (string, bool, error)
 }
 
 func (s *CachedStore) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	// Record write for policy tracking (before the actual write)
+	s.recordWrite(key, ttl)
+
 	err := s.backend.Set(ctx, key, value, ttl)
 	if err != nil {
 		return err

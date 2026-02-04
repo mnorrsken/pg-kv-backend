@@ -71,6 +71,15 @@ var (
 			Help: "Total number of cache misses",
 		},
 	)
+
+	// CacheSkips counts cache skips by reason (smart policy decisions)
+	CacheSkips = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "postkeys_cache_skips_total",
+			Help: "Total number of cache skips by reason (smart policy)",
+		},
+		[]string{"reason"},
+	)
 )
 
 // RecordCommand records metrics for a command execution

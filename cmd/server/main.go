@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -48,10 +49,26 @@ func main() {
 	var cachedStore *cache.CachedStore
 	var cacheInvalidator *cache.Invalidator
 	if cfg.CacheEnabled {
-		cachedStore = cache.NewCachedStore(store, cache.Config{
+		cacheCfg := cache.Config{
 			TTL:     cfg.CacheTTL,
 			MaxSize: cfg.CacheMaxSize,
-		})
+		}
+
+		// Use smart policy if enabled
+		if cfg.CacheSmartPolicy {
+			policyCfg := cache.PolicyConfig{
+				MinTTLForCache:      cfg.CacheMinTTLForCache,
+				MaxWriteFrequency:   cfg.CacheMaxWriteFrequency,
+				WriteTrackingWindow: cfg.CacheWriteTrackingWindow,
+				ExcludePatterns:     parsePatterns(cfg.CacheExcludePatterns),
+				IncludePatterns:     parsePatterns(cfg.CacheIncludePatterns),
+			}
+			cachedStore = cache.NewCachedStoreWithPolicy(store, cacheCfg, policyCfg)
+			log.Printf("Smart cache policy enabled (MinTTL: %v, MaxWriteFreq: %.1f/s)", 
+				cfg.CacheMinTTLForCache, cfg.CacheMaxWriteFrequency)
+		} else {
+			cachedStore = cache.NewCachedStore(store, cacheCfg)
+		}
 		backend = cachedStore
 
 		// Set up distributed cache invalidation (optional, for multi-pod deployments)
@@ -168,4 +185,20 @@ func main() {
 		log.Println("Shutdown timed out, forcing exit")
 		os.Exit(1)
 	}
+}
+
+// parsePatterns parses a comma-separated list of patterns
+func parsePatterns(s string) []string {
+	if s == "" {
+		return nil
+	}
+	patterns := strings.Split(s, ",")
+	result := make([]string, 0, len(patterns))
+	for _, p := range patterns {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
